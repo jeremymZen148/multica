@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/nlbot"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -321,7 +322,7 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 
 	parts := strings.Fields(text)
 	if len(parts) == 0 {
-		writeJSON(w, http.StatusOK, slackEphemeral("Usage: /multica [approve|reject|comment] <issue-id> [text...]"))
+		writeJSON(w, http.StatusOK, slackEphemeral("Usage: /multica [approve|reject|done|comment] <issue-id> [text...]"))
 		return
 	}
 
@@ -330,6 +331,8 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 		h.slackApprove(w, ctx, wsID, actorID, parts[1:])
 	case "reject":
 		h.slackReject(w, ctx, wsID, actorID, parts[1:])
+	case "done":
+		h.slackMarkDone(w, ctx, wsID, actorID, parts[1:])
 	case "comment":
 		h.slackComment(w, ctx, wsID, actorID, parts[1:])
 	default:
@@ -408,6 +411,13 @@ func (h *Handler) slackComment(w http.ResponseWriter, ctx context.Context, wsID,
 		return
 	}
 	content := strings.Join(args[1:], " ")
+
+	// Thread under the agent's latest root comment so the reply appears in context.
+	parentID := pgtype.UUID{}
+	if agentRoot, err := h.Queries.GetLatestAgentRootComment(ctx, issue.ID); err == nil {
+		parentID = agentRoot.ID
+	}
+
 	comment, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
 		IssueID:     issue.ID,
 		WorkspaceID: parseUUID(wsID),
@@ -415,6 +425,7 @@ func (h *Handler) slackComment(w http.ResponseWriter, ctx context.Context, wsID,
 		AuthorID:    parseUUID(actorID),
 		Content:     content,
 		Type:        "comment",
+		ParentID:    parentID,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusOK, slackEphemeral("⚠️ Failed to post comment."))
@@ -425,7 +436,37 @@ func (h *Handler) slackComment(w http.ResponseWriter, ctx context.Context, wsID,
 		"issue_title":  issue.Title,
 		"issue_status": issue.Status,
 	})
+	if h.shouldEnqueueOnComment(ctx, issue) {
+		h.TaskService.EnqueueTaskForIssue(ctx, issue, comment.ID)
+	}
 	writeJSON(w, http.StatusOK, slackEphemeral(fmt.Sprintf("💬 Comment posted on *%s*.", issue.Title)))
+}
+
+func (h *Handler) slackMarkDone(w http.ResponseWriter, ctx context.Context, wsID, actorID string, args []string) {
+	if len(args) == 0 {
+		writeJSON(w, http.StatusOK, slackEphemeral("Usage: /multica done <issue-id>"))
+		return
+	}
+	issue, err := h.getIssueInWorkspace(ctx, wsID, args[0])
+	if err != nil {
+		writeJSON(w, http.StatusOK, slackEphemeral(fmt.Sprintf("⚠️ Issue %q not found.", args[0])))
+		return
+	}
+	prev := issue.Status
+	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:     issue.ID,
+		Status: "done",
+	})
+	if err != nil {
+		writeJSON(w, http.StatusOK, slackEphemeral("⚠️ Failed to update issue."))
+		return
+	}
+	h.publish(protocol.EventIssueUpdated, wsID, "member", actorID, map[string]any{
+		"issue":          updated,
+		"status_changed": true,
+		"prev_status":    prev,
+	})
+	writeJSON(w, http.StatusOK, slackEphemeral(fmt.Sprintf("✅ *%s* marked as Done.", updated.Title)))
 }
 
 // ── Inbound webhook: interactive components ───────────────────────────────────
@@ -489,6 +530,9 @@ func (h *Handler) HandleSlackInteractive(w http.ResponseWriter, r *http.Request)
 			return
 		case "multica_reject":
 			h.slackReject(w, ctx, wsID, actorID, []string{action.Value})
+			return
+		case "multica_done":
+			h.slackMarkDone(w, ctx, wsID, actorID, []string{action.Value})
 			return
 		}
 	}
@@ -590,14 +634,23 @@ func BuildIssueActionBlocks(issueID, issueTitle, status, frontendOrigin string, 
 				"action_id": "multica_reject",
 				"value":     issueID,
 			})
-		case "view":
+		case "done":
 			buttons = append(buttons, map[string]any{
 				"type":      "button",
-				"text":      map[string]any{"type": "plain_text", "text": "🔗 View"},
-				"action_id": "multica_view",
+				"text":      map[string]any{"type": "plain_text", "text": "✅ Mark Done"},
+				"action_id": "multica_done",
 				"value":     issueID,
-				"url":       frontendOrigin + "/issues/" + issueID,
 			})
+		case "view":
+			if issueID != "" && strings.HasPrefix(frontendOrigin, "https://") {
+				buttons = append(buttons, map[string]any{
+					"type":      "button",
+					"text":      map[string]any{"type": "plain_text", "text": "🔗 View"},
+					"action_id": "multica_view",
+					"value":     issueID,
+					"url":       frontendOrigin + "/issues/" + issueID,
+				})
+			}
 		}
 	}
 	return []map[string]any{
