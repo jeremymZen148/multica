@@ -642,3 +642,14 @@ type GithubIssueSync struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
+
+type AIProviderConfig struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Provider    string             `json:"provider"`
+	Model       pgtype.Text        `json:"model"`
+	ApiKey      pgtype.Text        `json:"api_key"`
+	UpdatedByID pgtype.UUID        `json:"updated_by_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}

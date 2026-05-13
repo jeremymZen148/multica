@@ -257,6 +257,7 @@ func main() {
 	registerNotificationListeners(bus, queries)
 	registerSlackListeners(bus, queries)
 	registerTelegramListeners(bus, queries)
+	registerGitHubSyncListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
