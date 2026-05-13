@@ -1334,7 +1334,7 @@ func githubRepoSyncToResponse(s db.GithubRepoSync) GitHubRepoSyncResponse {
 
 // ListGitHubRepoSyncs returns all repo sync configurations for a workspace.
 func (h *Handler) ListGitHubRepoSyncs(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -1355,7 +1355,7 @@ func (h *Handler) ListGitHubRepoSyncs(w http.ResponseWriter, r *http.Request) {
 
 // UpsertGitHubRepoSync creates or updates a repo sync configuration.
 func (h *Handler) UpsertGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -1395,7 +1395,7 @@ func (h *Handler) UpsertGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
 
 // DeleteGitHubRepoSync removes a repo sync configuration.
 func (h *Handler) DeleteGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
