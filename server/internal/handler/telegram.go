@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/nlbot"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -283,29 +284,45 @@ func (h *Handler) HandleTelegramWebhook(w http.ResponseWriter, r *http.Request) 
 	actorID := util.UUIDToString(link.UserID)
 
 	parts := strings.Fields(text)
-	if len(parts) == 0 || !strings.HasPrefix(parts[0], "/") {
+	if len(parts) == 0 {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-	args := parts[1:]
-
 	var reply string
-	switch cmd {
-	case "approve":
-		reply = h.telegramApprove(ctx, wsID, actorID, args)
-	case "reject":
-		reply = h.telegramReject(ctx, wsID, actorID, args)
-	case "comment":
-		reply = h.telegramComment(ctx, wsID, actorID, args)
-	case "start", "help":
-		reply = "Welcome to Multica bot! Available commands:\n" +
-			"/approve <issue-id> — move to In Review\n" +
-			"/reject <issue-id> — send back to Todo\n" +
-			"/comment <issue-id> <text...> — post a comment"
-	default:
-		reply = fmt.Sprintf("Unknown command /%s. Try /help.", cmd)
+	if !strings.HasPrefix(parts[0], "/") {
+		// Free-text message — route to NL bot.
+		nlReply, err := nlbot.Process(ctx, h.Queries, wsUUID, link.UserID, text)
+		if err != nil {
+			reply = "⚠️ " + err.Error()
+		} else {
+			reply = nlReply
+		}
+	} else {
+		cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
+		args := parts[1:]
+		switch cmd {
+		case "approve":
+			reply = h.telegramApprove(ctx, wsID, actorID, args)
+		case "reject":
+			reply = h.telegramReject(ctx, wsID, actorID, args)
+		case "comment":
+			reply = h.telegramComment(ctx, wsID, actorID, args)
+		case "start", "help":
+			reply = "Welcome to Multica bot! Available commands:\n" +
+				"/approve <issue-id> — move to In Review\n" +
+				"/reject <issue-id> — send back to Todo\n" +
+				"/comment <issue-id> <text...> — post a comment\n\n" +
+				"Or just send a message in plain text and I'll understand it."
+		default:
+			// Unknown slash command — also route to NL bot.
+			nlReply, err := nlbot.Process(ctx, h.Queries, wsUUID, link.UserID, text)
+			if err != nil {
+				reply = fmt.Sprintf("Unknown command /%s. Try /help.", cmd)
+			} else {
+				reply = nlReply
+			}
+		}
 	}
 
 	if reply != "" {

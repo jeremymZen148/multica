@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/multica-ai/multica/server/internal/nlbot"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -332,8 +333,13 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 	case "comment":
 		h.slackComment(w, ctx, wsID, actorID, parts[1:])
 	default:
-		writeJSON(w, http.StatusOK, slackEphemeral(
-			fmt.Sprintf("Unknown sub-command %q. Try: approve, reject, comment.", parts[0])))
+		// Route everything else to the NL bot.
+		reply, err := nlbot.Process(ctx, h.Queries, integration.WorkspaceID, link.UserID, text)
+		if err != nil {
+			writeJSON(w, http.StatusOK, slackEphemeral("⚠️ "+err.Error()))
+			return
+		}
+		writeJSON(w, http.StatusOK, slackEphemeral(reply))
 	}
 }
 
