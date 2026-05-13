@@ -396,6 +396,8 @@ func (h *Handler) HandleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		h.handleInstallationEvent(ctx, body)
 	case "pull_request":
 		h.handlePullRequestEvent(ctx, body)
+	case "issues":
+		h.handleGitHubIssueEvent(ctx, body)
 	default:
 		// Acknowledge every event so GitHub doesn't mark the endpoint failing,
 		// but ignore types we don't model.
@@ -723,6 +725,333 @@ func coalesce(a, fallback string) string {
 		return fallback
 	}
 	return a
+}
+
+// ── Inbound GitHub issue sync ────────────────────────────────────────────────
+
+type ghIssuePayload struct {
+	Action       string `json:"action"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
+	Repository struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"repository"`
+	Issue struct {
+		Number int32  `json:"number"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
+	} `json:"issue"`
+}
+
+func (h *Handler) handleGitHubIssueEvent(ctx context.Context, body []byte) {
+	var p ghIssuePayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		slog.Warn("github: bad issues payload", "err", err)
+		return
+	}
+	if p.Installation.ID == 0 {
+		return
+	}
+
+	inst, err := h.Queries.GetGitHubInstallationByInstallationID(ctx, p.Installation.ID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("github: lookup installation for issue event failed", "err", err)
+		}
+		return
+	}
+
+	repoOwner := p.Repository.Owner.Login
+	repoName := p.Repository.Name
+	wsID := inst.WorkspaceID
+	wsIDStr := uuidToString(wsID)
+
+	switch p.Action {
+	case "opened":
+		// Only create a Multica issue if this workspace has inbound sync configured.
+		repoSync, err := h.Queries.GetGitHubRepoSync(ctx, db.GetGitHubRepoSyncParams{
+			WorkspaceID: wsID,
+			RepoOwner:   repoOwner,
+			RepoName:    repoName,
+		})
+		if err != nil {
+			// No sync configured for this repo — skip.
+			return
+		}
+		if repoSync.SyncDirection == "multica_to_github" {
+			return
+		}
+
+		// Skip if already synced (duplicate webhook).
+		_, err = h.Queries.GetGitHubIssueSyncByGitHubIssue(ctx, db.GetGitHubIssueSyncByGitHubIssueParams{
+			WorkspaceID:       wsID,
+			GithubRepoOwner:   repoOwner,
+			GithubRepoName:    repoName,
+			GithubIssueNumber: p.Issue.Number,
+		})
+		if err == nil {
+			return // already synced
+		}
+
+		num, err := h.Queries.IncrementIssueCounter(ctx, wsID)
+		if err != nil {
+			slog.Warn("github: increment issue counter failed", "err", err)
+			return
+		}
+
+		desc := pgtype.Text{}
+		if p.Issue.Body != "" {
+			desc = pgtype.Text{String: p.Issue.Body, Valid: true}
+		}
+
+		newIssue, err := h.Queries.CreateIssue(ctx, db.CreateIssueParams{
+			WorkspaceID: wsID,
+			Title:       p.Issue.Title,
+			Description: desc,
+			Status:      "todo",
+			Priority:    "medium",
+			CreatorType: "member",
+			CreatorID:   inst.ConnectedByID,
+			Number:      num,
+		})
+		if err != nil {
+			slog.Warn("github: create issue from GitHub failed", "err", err)
+			return
+		}
+
+		_, err = h.Queries.UpsertGitHubIssueSync(ctx, db.UpsertGitHubIssueSyncParams{
+			WorkspaceID:       wsID,
+			InstallationID:    p.Installation.ID,
+			MulticaIssueID:    newIssue.ID,
+			GithubRepoOwner:   repoOwner,
+			GithubRepoName:    repoName,
+			GithubIssueNumber: p.Issue.Number,
+			SyncDirection:     repoSync.SyncDirection,
+		})
+		if err != nil {
+			slog.Warn("github: upsert issue sync record failed", "err", err)
+		}
+
+		prefix := h.getIssuePrefix(ctx, wsID)
+		resp := issueToResponse(newIssue, prefix)
+		h.publish(protocol.EventIssueCreated, wsIDStr, "system", "", map[string]any{
+			"issue":  resp,
+			"source": "github_webhook",
+		})
+
+	case "edited":
+		sync, err := h.Queries.GetGitHubIssueSyncByGitHubIssue(ctx, db.GetGitHubIssueSyncByGitHubIssueParams{
+			WorkspaceID:       wsID,
+			GithubRepoOwner:   repoOwner,
+			GithubRepoName:    repoName,
+			GithubIssueNumber: p.Issue.Number,
+		})
+		if err != nil {
+			return
+		}
+		if sync.SyncDirection == "multica_to_github" {
+			return
+		}
+
+		current, err := h.Queries.GetIssue(ctx, sync.MulticaIssueID)
+		if err != nil {
+			slog.Warn("github: get issue for edit sync failed", "err", err)
+			return
+		}
+
+		desc := pgtype.Text{}
+		if p.Issue.Body != "" {
+			desc = pgtype.Text{String: p.Issue.Body, Valid: true}
+		}
+
+		updated, err := h.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+			ID:            current.ID,
+			Title:         pgtype.Text{String: p.Issue.Title, Valid: true},
+			Description:   desc,
+			AssigneeType:  current.AssigneeType,
+			AssigneeID:    current.AssigneeID,
+			DueDate:       current.DueDate,
+			ParentIssueID: current.ParentIssueID,
+			ProjectID:     current.ProjectID,
+		})
+		if err != nil {
+			slog.Warn("github: update issue from GitHub edit failed", "err", err)
+			return
+		}
+
+		if err := h.Queries.TouchGitHubIssueSyncTimestamp(ctx, sync.MulticaIssueID); err != nil {
+			slog.Warn("github: touch sync timestamp failed", "err", err)
+		}
+
+		prefix := h.getIssuePrefix(ctx, wsID)
+		resp := issueToResponse(updated, prefix)
+		h.publish(protocol.EventIssueUpdated, wsIDStr, "system", "", map[string]any{
+			"issue":  resp,
+			"source": "github_webhook",
+		})
+
+	case "closed", "reopened":
+		sync, err := h.Queries.GetGitHubIssueSyncByGitHubIssue(ctx, db.GetGitHubIssueSyncByGitHubIssueParams{
+			WorkspaceID:       wsID,
+			GithubRepoOwner:   repoOwner,
+			GithubRepoName:    repoName,
+			GithubIssueNumber: p.Issue.Number,
+		})
+		if err != nil {
+			return
+		}
+		if sync.SyncDirection == "multica_to_github" {
+			return
+		}
+
+		status := "done"
+		if p.Action == "reopened" {
+			status = "todo"
+		}
+
+		updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+			ID:     sync.MulticaIssueID,
+			Status: status,
+		})
+		if err != nil {
+			slog.Warn("github: update issue status from GitHub failed", "err", err)
+			return
+		}
+
+		if err := h.Queries.TouchGitHubIssueSyncTimestamp(ctx, sync.MulticaIssueID); err != nil {
+			slog.Warn("github: touch sync timestamp failed", "err", err)
+		}
+
+		prefix := h.getIssuePrefix(ctx, wsID)
+		resp := issueToResponse(updated, prefix)
+		h.publish(protocol.EventIssueUpdated, wsIDStr, "system", "", map[string]any{
+			"issue":          resp,
+			"status_changed": true,
+			"source":         "github_webhook",
+		})
+	}
+}
+
+// ── GitHub Repo Sync API ─────────────────────────────────────────────────────
+
+type GitHubRepoSyncResponse struct {
+	ID             string `json:"id"`
+	WorkspaceID    string `json:"workspace_id"`
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	SyncDirection  string `json:"sync_direction"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type githubRepoSyncRequest struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	SyncDirection  string `json:"sync_direction"`
+}
+
+func githubRepoSyncToResponse(s db.GithubRepoSync) GitHubRepoSyncResponse {
+	return GitHubRepoSyncResponse{
+		ID:             uuidToString(s.ID),
+		WorkspaceID:    uuidToString(s.WorkspaceID),
+		InstallationID: s.InstallationID,
+		RepoOwner:      s.RepoOwner,
+		RepoName:       s.RepoName,
+		SyncDirection:  s.SyncDirection,
+		CreatedAt:      timestampToString(s.CreatedAt),
+	}
+}
+
+// ListGitHubRepoSyncs returns all repo sync configurations for a workspace.
+func (h *Handler) ListGitHubRepoSyncs(w http.ResponseWriter, r *http.Request) {
+	wsID := r.Header.Get("X-Workspace-ID")
+	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	syncs, err := h.Queries.ListGitHubRepoSyncs(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list repo syncs")
+		return
+	}
+
+	out := make([]GitHubRepoSyncResponse, len(syncs))
+	for i, s := range syncs {
+		out[i] = githubRepoSyncToResponse(s)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// UpsertGitHubRepoSync creates or updates a repo sync configuration.
+func (h *Handler) UpsertGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
+	wsID := r.Header.Get("X-Workspace-ID")
+	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	var req githubRepoSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.RepoOwner == "" || req.RepoName == "" {
+		writeError(w, http.StatusBadRequest, "repo_owner and repo_name are required")
+		return
+	}
+	switch req.SyncDirection {
+	case "multica_to_github", "github_to_multica", "both":
+	case "":
+		req.SyncDirection = "both"
+	default:
+		writeError(w, http.StatusBadRequest, "sync_direction must be multica_to_github, github_to_multica, or both")
+		return
+	}
+
+	sync, err := h.Queries.UpsertGitHubRepoSync(r.Context(), db.UpsertGitHubRepoSyncParams{
+		WorkspaceID:    wsUUID,
+		InstallationID: req.InstallationID,
+		RepoOwner:      req.RepoOwner,
+		RepoName:       req.RepoName,
+		SyncDirection:  req.SyncDirection,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save repo sync")
+		return
+	}
+	writeJSON(w, http.StatusOK, githubRepoSyncToResponse(sync))
+}
+
+// DeleteGitHubRepoSync removes a repo sync configuration.
+func (h *Handler) DeleteGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
+	wsID := r.Header.Get("X-Workspace-ID")
+	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	repoOwner := chi.URLParam(r, "repoOwner")
+	repoName := chi.URLParam(r, "repoName")
+	if repoOwner == "" || repoName == "" {
+		writeError(w, http.StatusBadRequest, "repoOwner and repoName are required")
+		return
+	}
+
+	if err := h.Queries.DeleteGitHubRepoSync(r.Context(), db.DeleteGitHubRepoSyncParams{
+		WorkspaceID: wsUUID,
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete repo sync")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func strPtrOrNil(s string) *string {
