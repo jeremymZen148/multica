@@ -90,6 +90,7 @@ import type {
 } from "../types";
 import type { SlackIntegration, SlackConnectResponse, SlackUserLink } from "../types/slack";
 import type { TelegramIntegration, TelegramUserLink } from "../types/telegram";
+import type { AIProviderConfig, AIProviderConfigInput } from "../types/ai-provider";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
@@ -1453,5 +1454,26 @@ export class ApiClient {
 
   async unlinkTelegramUser(workspaceId: string): Promise<void> {
     await this.fetch(`/api/integrations/telegram/link`, { method: "DELETE" });
+  }
+
+  // AI Provider integration
+  async getAIProviderConfig(workspaceId: string): Promise<AIProviderConfig | null> {
+    try {
+      return await this.fetch<AIProviderConfig>(`/api/workspaces/${workspaceId}/ai-provider`);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return null;
+      throw e;
+    }
+  }
+
+  async upsertAIProviderConfig(workspaceId: string, input: AIProviderConfigInput): Promise<AIProviderConfig> {
+    return this.fetch<AIProviderConfig>(`/api/workspaces/${workspaceId}/ai-provider`, {
+      method: "PUT",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async deleteAIProviderConfig(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/ai-provider`, { method: "DELETE" });
   }
 }

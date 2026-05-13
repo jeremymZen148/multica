@@ -24,6 +24,8 @@ import {
   useUnlinkTelegramUser,
 } from "@multica/core/telegram/mutations";
 import { api } from "@multica/core/api";
+import { aiProviderConfigOptions } from "@multica/core/ai-provider/queries";
+import { useUpsertAIProviderConfig, useDeleteAIProviderConfig } from "@multica/core/ai-provider/mutations";
 import { useT } from "../../i18n";
 
 function GitHubMark({ className }: { className?: string }) {
@@ -50,6 +52,16 @@ function TelegramMark({ className }: { className?: string }) {
   );
 }
 
+function BotMark({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} aria-hidden="true" className={className}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 3h6M12 3v4M5 7h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V9a2 2 0 012-2z" />
+      <circle cx="9" cy="14" r="1.5" />
+      <circle cx="15" cy="14" r="1.5" />
+    </svg>
+  );
+}
+
 export function IntegrationsTab() {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
@@ -63,6 +75,9 @@ export function IntegrationsTab() {
   const [telegramTokenInput, setTelegramTokenInput] = useState("");
   const [telegramChatIdInput, setTelegramChatIdInput] = useState("");
   const [telegramLinked, setTelegramLinked] = useState(false);
+  const [aiProvider, setAiProvider] = useState("anthropic");
+  const [aiModel, setAiModel] = useState("");
+  const [aiKey, setAiKey] = useState("");
 
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
   const canManage = currentMember?.role === "owner" || currentMember?.role === "admin";
@@ -96,6 +111,14 @@ export function IntegrationsTab() {
   const deleteTelegram = useDeleteTelegramIntegration(wsId);
   const linkTelegram = useLinkTelegramUser(wsId);
   const unlinkTelegram = useUnlinkTelegramUser(wsId);
+
+  // AI Provider
+  const { data: aiProviderData } = useQuery({
+    ...aiProviderConfigOptions(wsId),
+    enabled: !!wsId,
+  });
+  const upsertAIProvider = useUpsertAIProviderConfig(wsId);
+  const deleteAIProvider = useDeleteAIProviderConfig(wsId);
 
   async function handleGitHubConnect() {
     setConnectingGitHub(true);
@@ -199,6 +222,29 @@ export function IntegrationsTab() {
       toast.success(t(($) => $.integrations.telegram_account_unlinked));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t(($) => $.integrations.toast_unlink_failed));
+    }
+  }
+
+  async function handleAIProviderSave() {
+    try {
+      const provider = aiProvider as "anthropic" | "openai" | "gemini";
+      await upsertAIProvider.mutateAsync({ provider, model: aiModel, api_key: aiKey });
+      setAiKey("");
+      toast.success(t(($) => $.integrations.ai_provider_saved));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.integrations.toast_connect_failed));
+    }
+  }
+
+  async function handleAIProviderRemove() {
+    try {
+      await deleteAIProvider.mutateAsync();
+      setAiProvider("anthropic");
+      setAiModel("");
+      setAiKey("");
+      toast.success(t(($) => $.integrations.ai_provider_removed));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.integrations.toast_disconnect_failed));
     }
   }
 
@@ -448,6 +494,96 @@ export function IntegrationsTab() {
             </div>
 
             {!canManage && (
+              <p className="text-xs text-muted-foreground">
+                {t(($) => $.integrations.manage_hint)}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* AI Provider */}
+        <Card>
+          <CardContent className="space-y-4">
+            <div className="flex items-start gap-3">
+              <BotMark className="h-6 w-6 mt-0.5 shrink-0" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium">{t(($) => $.integrations.ai_provider_title)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {t(($) => $.integrations.ai_provider_description)}
+                </p>
+                {aiProviderData ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t(($) => $.integrations.ai_provider_current)}{" "}
+                    <span className="font-medium">{aiProviderData.provider}</span>
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    {t(($) => $.integrations.ai_provider_not_configured)}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {canManage ? (
+              <div className="space-y-3">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.ai_provider_label)}</p>
+                  <select
+                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    value={aiProvider}
+                    onChange={(e) => setAiProvider(e.target.value)}
+                  >
+                    <option value="anthropic">{t(($) => $.integrations.ai_provider_provider_anthropic)}</option>
+                    <option value="openai">{t(($) => $.integrations.ai_provider_provider_openai)}</option>
+                    <option value="gemini">{t(($) => $.integrations.ai_provider_provider_gemini)}</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.ai_provider_model_label)}</p>
+                  <Input
+                    className="h-8 text-xs"
+                    value={aiModel}
+                    onChange={(e) => setAiModel(e.target.value)}
+                    placeholder={aiProviderData?.model ?? ""}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.ai_provider_key_label)}</p>
+                  <Input
+                    className="h-8 text-xs font-mono"
+                    type="password"
+                    value={aiKey}
+                    onChange={(e) => setAiKey(e.target.value)}
+                    placeholder={
+                      aiProviderData?.has_api_key
+                        ? t(($) => $.integrations.ai_provider_key_set)
+                        : t(($) => $.integrations.ai_provider_key_placeholder)
+                    }
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={handleAIProviderSave}
+                    disabled={upsertAIProvider.isPending}
+                  >
+                    {upsertAIProvider.isPending
+                      ? t(($) => $.integrations.ai_provider_saving)
+                      : t(($) => $.integrations.ai_provider_save)}
+                  </Button>
+                  {aiProviderData && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleAIProviderRemove}
+                      disabled={deleteAIProvider.isPending}
+                    >
+                      {t(($) => $.integrations.ai_provider_remove)}
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : (
               <p className="text-xs text-muted-foreground">
                 {t(($) => $.integrations.manage_hint)}
               </p>
