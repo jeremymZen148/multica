@@ -589,3 +589,56 @@ type WorkspaceInvitation struct {
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
 }
+
+type SlackIntegration struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	TeamID             string             `json:"team_id"`
+	TeamName           string             `json:"team_name"`
+	BotUserID          string             `json:"bot_user_id"`
+	BotToken           string             `json:"bot_token"`
+	DefaultChannelID   pgtype.Text        `json:"default_channel_id"`
+	DefaultChannelName pgtype.Text        `json:"default_channel_name"`
+	InstalledByID      pgtype.UUID        `json:"installed_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SlackUserLink struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	SlackUserID string             `json:"slack_user_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+type TelegramIntegration struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	BotToken      string             `json:"bot_token"`
+	BotUsername   string             `json:"bot_username"`
+	InstalledByID pgtype.UUID        `json:"installed_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type TelegramUserLink struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	TelegramChatID   int64              `json:"telegram_chat_id"`
+	TelegramUsername pgtype.Text        `json:"telegram_username"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
+type GithubIssueSync struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	InstallationID    int64              `json:"installation_id"`
+	MulticaIssueID    pgtype.UUID        `json:"multica_issue_id"`
+	GithubRepoOwner   string             `json:"github_repo_owner"`
+	GithubRepoName    string             `json:"github_repo_name"`
+	GithubIssueNumber int32              `json:"github_issue_number"`
+	SyncDirection     string             `json:"sync_direction"`
+	LastSyncedAt      pgtype.Timestamptz `json:"last_synced_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
