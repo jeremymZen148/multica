@@ -26,6 +26,9 @@ import {
 import { api } from "@multica/core/api";
 import { aiProviderConfigOptions } from "@multica/core/ai-provider/queries";
 import { useUpsertAIProviderConfig, useDeleteAIProviderConfig } from "@multica/core/ai-provider/mutations";
+import { githubRepoSyncsOptions } from "@multica/core/github-sync/queries";
+import { useUpsertGitHubRepoSync, useDeleteGitHubRepoSync } from "@multica/core/github-sync/mutations";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { useT } from "../../i18n";
 
 function GitHubMark({ className }: { className?: string }) {
@@ -78,6 +81,10 @@ export function IntegrationsTab() {
   const [aiProvider, setAiProvider] = useState("anthropic");
   const [aiModel, setAiModel] = useState("");
   const [aiKey, setAiKey] = useState("");
+  const [syncOwner, setSyncOwner] = useState("");
+  const [syncName, setSyncName] = useState("");
+  const [syncInstallationId, setSyncInstallationId] = useState("");
+  const [syncDirection, setSyncDirection] = useState<"multica_to_github" | "github_to_multica" | "both">("both");
 
   const currentMember = members.find((m) => m.user_id === user?.id) ?? null;
   const canManage = currentMember?.role === "owner" || currentMember?.role === "admin";
@@ -119,6 +126,14 @@ export function IntegrationsTab() {
   });
   const upsertAIProvider = useUpsertAIProviderConfig(wsId);
   const deleteAIProvider = useDeleteAIProviderConfig(wsId);
+
+  // GitHub Repo Sync
+  const { data: githubRepoSyncs = [] } = useQuery({
+    ...githubRepoSyncsOptions(wsId),
+    enabled: !!wsId && canManage,
+  });
+  const upsertGitHubRepoSync = useUpsertGitHubRepoSync(wsId);
+  const deleteGitHubRepoSync = useDeleteGitHubRepoSync(wsId);
 
   async function handleGitHubConnect() {
     setConnectingGitHub(true);
@@ -248,6 +263,37 @@ export function IntegrationsTab() {
     }
   }
 
+  async function handleGitHubSyncAdd() {
+    const owner = syncOwner.trim();
+    const name = syncName.trim();
+    const installationId = parseInt(syncInstallationId.trim(), 10);
+    if (!owner || !name || isNaN(installationId)) return;
+    try {
+      await upsertGitHubRepoSync.mutateAsync({
+        installation_id: installationId,
+        repo_owner: owner,
+        repo_name: name,
+        sync_direction: syncDirection,
+      });
+      setSyncOwner("");
+      setSyncName("");
+      setSyncInstallationId("");
+      setSyncDirection("both");
+      toast.success(t(($) => $.integrations.github_sync_toast_added));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.integrations.github_sync_toast_add_failed));
+    }
+  }
+
+  async function handleGitHubSyncRemove(repoOwner: string, repoName: string) {
+    try {
+      await deleteGitHubRepoSync.mutateAsync({ repoOwner, repoName });
+      toast.success(t(($) => $.integrations.github_sync_toast_removed));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t(($) => $.integrations.github_sync_toast_remove_failed));
+    }
+  }
+
   return (
     <div className="space-y-4">
       <section className="space-y-4">
@@ -301,6 +347,119 @@ export function IntegrationsTab() {
             )}
           </CardContent>
         </Card>
+
+        {/* GitHub Issue Sync */}
+        {canManage && (
+          <Card>
+            <CardContent className="space-y-4">
+              <div className="flex items-start gap-3">
+                <GitHubMark className="h-6 w-6 mt-0.5 shrink-0" />
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{t(($) => $.integrations.github_sync_title)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {t(($) => $.integrations.github_sync_description)}
+                  </p>
+                </div>
+              </div>
+
+              {/* Synced repos list */}
+              {githubRepoSyncs.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t(($) => $.integrations.github_sync_no_repos)}</p>
+              ) : (
+                <div className="space-y-2">
+                  {githubRepoSyncs.map((sync) => (
+                    <div
+                      key={sync.id}
+                      className="flex items-center justify-between gap-2 rounded-md border px-3 py-2"
+                    >
+                      <div className="space-y-0.5">
+                        <p className="text-xs font-medium">
+                          {sync.repo_owner}/{sync.repo_name}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {sync.sync_direction === "both"
+                            ? t(($) => $.integrations.github_sync_direction_both)
+                            : sync.sync_direction === "multica_to_github"
+                            ? t(($) => $.integrations.github_sync_direction_multica_to_github)
+                            : t(($) => $.integrations.github_sync_direction_github_to_multica)}
+                        </p>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleGitHubSyncRemove(sync.repo_owner, sync.repo_name)}
+                        disabled={deleteGitHubRepoSync.isPending}
+                      >
+                        {t(($) => $.integrations.github_sync_remove)}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Add form */}
+              <div className="space-y-3 border-t pt-4">
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.github_sync_repo_label)}</p>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      className="h-8 text-xs"
+                      placeholder={t(($) => $.integrations.github_sync_owner_placeholder)}
+                      value={syncOwner}
+                      onChange={(e) => setSyncOwner(e.target.value)}
+                    />
+                    <span className="text-xs text-muted-foreground">/</span>
+                    <Input
+                      className="h-8 text-xs"
+                      placeholder={t(($) => $.integrations.github_sync_name_placeholder)}
+                      value={syncName}
+                      onChange={(e) => setSyncName(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.github_sync_installation_label)}</p>
+                  <Input
+                    className="h-8 text-xs"
+                    placeholder={t(($) => $.integrations.github_sync_installation_placeholder)}
+                    value={syncInstallationId}
+                    onChange={(e) => setSyncInstallationId(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-medium">{t(($) => $.integrations.github_sync_direction_label)}</p>
+                  <Select
+                    value={syncDirection}
+                    onValueChange={(v) => setSyncDirection(v as typeof syncDirection)}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="both">{t(($) => $.integrations.github_sync_direction_both)}</SelectItem>
+                      <SelectItem value="multica_to_github">{t(($) => $.integrations.github_sync_direction_multica_to_github)}</SelectItem>
+                      <SelectItem value="github_to_multica">{t(($) => $.integrations.github_sync_direction_github_to_multica)}</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <Button
+                  size="sm"
+                  onClick={handleGitHubSyncAdd}
+                  disabled={
+                    !syncOwner.trim() ||
+                    !syncName.trim() ||
+                    !syncInstallationId.trim() ||
+                    upsertGitHubRepoSync.isPending
+                  }
+                >
+                  {upsertGitHubRepoSync.isPending
+                    ? t(($) => $.integrations.github_sync_adding)
+                    : t(($) => $.integrations.github_sync_add)}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Slack */}
         <Card>

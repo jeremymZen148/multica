@@ -25,18 +25,74 @@ import (
 func registerGitHubSyncListeners(bus *events.Bus, queries *db.Queries) {
 	ctx := context.Background()
 
-	// issue:created — auto-push on create requires knowing which repo to target.
-	// That information is not present on the event bus (a workspace may have
-	// many repos synced). Callers that want to push a new issue to a specific
-	// repo should use the dedicated sync API endpoint instead.
+	// issue:created — push to all repos that have multica_to_github or both sync.
+	// Issues that originated from a GitHub webhook carry source="github_webhook"
+	// in their payload and are skipped to prevent echo-back loops.
 	bus.Subscribe(protocol.EventIssueCreated, func(e events.Event) {
-		slog.Debug("github_sync: issue:created received; auto-push requires a repo target — use the sync API endpoint to link a repo")
+		payload, ok := e.Payload.(map[string]any)
+		if !ok {
+			return
+		}
+		if source, _ := payload["source"].(string); source == "github_webhook" {
+			return
+		}
+
+		issue, ok := payload["issue"].(handler.IssueResponse)
+		if !ok {
+			return
+		}
+
+		token := os.Getenv("GITHUB_TOKEN")
+		if token == "" {
+			return
+		}
+
+		wsUUID := parseUUID(issue.WorkspaceID)
+		syncs, err := queries.ListGitHubRepoSyncs(ctx, wsUUID)
+		if err != nil || len(syncs) == 0 {
+			return
+		}
+
+		issueUUID := parseUUID(issue.ID)
+		body := githubIssueBody(issue.Description, issue.ID)
+		for _, s := range syncs {
+			if s.SyncDirection == "github_to_multica" {
+				continue
+			}
+			ghNum, err := githubCreateIssue(ctx, token, s.RepoOwner, s.RepoName, issue.Title, body)
+			if err != nil {
+				slog.Warn("github_sync: failed to create GitHub issue",
+					"multica_issue_id", issue.ID,
+					"repo", s.RepoOwner+"/"+s.RepoName,
+					"error", err,
+				)
+				continue
+			}
+			if _, err := queries.UpsertGitHubIssueSync(ctx, db.UpsertGitHubIssueSyncParams{
+				WorkspaceID:       wsUUID,
+				InstallationID:    s.InstallationID,
+				MulticaIssueID:    issueUUID,
+				GithubRepoOwner:   s.RepoOwner,
+				GithubRepoName:    s.RepoName,
+				GithubIssueNumber: ghNum,
+				SyncDirection:     s.SyncDirection,
+			}); err != nil {
+				slog.Warn("github_sync: failed to upsert issue sync record",
+					"multica_issue_id", issue.ID,
+					"error", err,
+				)
+			}
+		}
 	})
 
 	// issue:updated — update the GitHub issue title/body when a sync record exists.
 	bus.Subscribe(protocol.EventIssueUpdated, func(e events.Event) {
 		payload, ok := e.Payload.(map[string]any)
 		if !ok {
+			return
+		}
+		// Skip updates that originated from GitHub to prevent echo-back loops.
+		if source, _ := payload["source"].(string); source == "github_webhook" {
 			return
 		}
 
@@ -131,6 +187,44 @@ func githubIssueBody(description *string, issueID string) string {
 		body = *description
 	}
 	return fmt.Sprintf("%s\n\n---\n*Synced from Multica issue %s*", body, issueID)
+}
+
+// githubCreateIssue POSTs a new issue to the GitHub Issues API and returns the
+// issue number assigned by GitHub.
+func githubCreateIssue(ctx context.Context, token, owner, repo, title, body string) (int32, error) {
+	payload := map[string]any{"title": title, "body": body}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return 0, fmt.Errorf("marshal github create payload: %w", err)
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues", owner, repo)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return 0, fmt.Errorf("build github create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("github create request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, fmt.Errorf("github POST /repos/%s/%s/issues returned %d", owner, repo, resp.StatusCode)
+	}
+
+	var result struct {
+		Number int32 `json:"number"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, fmt.Errorf("decode github create response: %w", err)
+	}
+	return result.Number, nil
 }
 
 // githubPatchIssue sends a PATCH request to the GitHub Issues API.

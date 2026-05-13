@@ -103,6 +103,7 @@ import type {
 import type { SlackIntegration, SlackConnectResponse, SlackUserLink } from "../types/slack";
 import type { TelegramIntegration, TelegramUserLink } from "../types/telegram";
 import type { AIProviderConfig, AIProviderConfigInput } from "../types/ai-provider";
+import type { GitHubRepoSync, GitHubRepoSyncInput } from "../types/github-sync";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
   CloudRuntimeNode,
@@ -1849,5 +1850,23 @@ export class ApiClient {
 
   async deleteAIProviderConfig(workspaceId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/ai-provider`, { method: "DELETE" });
+  }
+
+  // GitHub Repo Sync
+  async listGitHubRepoSyncs(workspaceId: string): Promise<GitHubRepoSync[]> {
+    return this.fetch(`/api/workspaces/${workspaceId}/github-sync`);
+  }
+
+  async upsertGitHubRepoSync(workspaceId: string, input: GitHubRepoSyncInput): Promise<GitHubRepoSync> {
+    return this.fetch(`/api/workspaces/${workspaceId}/github-sync`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async deleteGitHubRepoSync(workspaceId: string, repoOwner: string, repoName: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/github-sync/${repoOwner}/${repoName}`, {
+      method: "DELETE",
+    });
   }
 }

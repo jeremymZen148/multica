@@ -373,6 +373,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+					r.Get("/github-sync", h.ListGitHubRepoSyncs)
+					r.Post("/github-sync", h.UpsertGitHubRepoSync)
+					r.Delete("/github-sync/{repoOwner}/{repoName}", h.DeleteGitHubRepoSync)
 				})
 
 				// Slack integration — admin-only.
