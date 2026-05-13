@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listAllTelegramIntegrations = `-- name: ListAllTelegramIntegrations :many
+SELECT id, workspace_id, bot_token, bot_username, installed_by_id, created_at, updated_at FROM telegram_integration
+`
+
+func (q *Queries) ListAllTelegramIntegrations(ctx context.Context) ([]TelegramIntegration, error) {
+	rows, err := q.db.Query(ctx, listAllTelegramIntegrations)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TelegramIntegration
+	for rows.Next() {
+		var i TelegramIntegration
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.BotToken,
+			&i.BotUsername,
+			&i.InstalledByID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	return items, rows.Err()
+}
+
 const getTelegramIntegration = `-- name: GetTelegramIntegration :one
 SELECT id, workspace_id, bot_token, bot_username, installed_by_id, created_at, updated_at FROM telegram_integration WHERE workspace_id = $1
 `
