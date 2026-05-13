@@ -5,6 +5,9 @@
 -- name: GetTelegramIntegration :one
 SELECT * FROM telegram_integration WHERE workspace_id = $1;
 
+-- name: ListAllTelegramIntegrations :many
+SELECT * FROM telegram_integration;
+
 -- name: UpsertTelegramIntegration :one
 INSERT INTO telegram_integration (workspace_id, bot_token, bot_username, installed_by_id)
 VALUES ($1, $2, $3, sqlc.narg('installed_by_id'))

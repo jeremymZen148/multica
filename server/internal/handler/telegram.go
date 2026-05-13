@@ -12,6 +12,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/nlbot"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -242,24 +243,27 @@ func (h *Handler) HandleTelegramWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 
 	ctx := r.Context()
-
-	// Load the integration to get the bot token (needed for sending replies).
 	integration, err := h.Queries.GetTelegramIntegration(ctx, wsUUID)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
+	h.ProcessTelegramUpdate(ctx, wsID, wsUUID, integration, update)
+	w.WriteHeader(http.StatusOK)
+}
+
+// ProcessTelegramUpdate handles a parsed Telegram update — called by both the
+// webhook HTTP handler and the polling loop.
+func (h *Handler) ProcessTelegramUpdate(ctx context.Context, wsID string, wsUUID pgtype.UUID, integration db.TelegramIntegration, update telegramUpdate) {
 	// Handle callback_query (inline keyboard button press).
 	if update.CallbackQuery != nil {
 		h.handleTelegramCallback(ctx, wsID, wsUUID, integration, update.CallbackQuery)
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	// Handle text messages.
 	if update.Message == nil || update.Message.Text == "" {
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -274,18 +278,27 @@ func (h *Handler) HandleTelegramWebhook(w http.ResponseWriter, r *http.Request) 
 	if err == pgx.ErrNoRows {
 		_ = TelegramSendMessage(ctx, integration.BotToken, chatID,
 			"⚠️ Your Telegram account is not linked. Visit Multica → Settings → Integrations → Telegram.", nil)
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 	if err != nil {
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 	actorID := util.UUIDToString(link.UserID)
 
+	// Reply-to-message → post as comment on the issue from the original notification.
+	if update.Message.ReplyToMessage != nil && !strings.HasPrefix(text, "/") {
+		issueID := extractIssueIDFromText(update.Message.ReplyToMessage.Text)
+		if issueID != "" {
+			reply := h.telegramComment(ctx, wsID, actorID, []string{issueID, text})
+			if reply != "" {
+				_ = TelegramSendMessage(ctx, integration.BotToken, chatID, reply, nil)
+			}
+			return
+		}
+	}
+
 	parts := strings.Fields(text)
 	if len(parts) == 0 {
-		w.WriteHeader(http.StatusOK)
 		return
 	}
 
@@ -306,14 +319,20 @@ func (h *Handler) HandleTelegramWebhook(w http.ResponseWriter, r *http.Request) 
 			reply = h.telegramApprove(ctx, wsID, actorID, args)
 		case "reject":
 			reply = h.telegramReject(ctx, wsID, actorID, args)
+		case "done":
+			reply = h.telegramMarkDone(ctx, wsID, actorID, args)
 		case "comment":
 			reply = h.telegramComment(ctx, wsID, actorID, args)
+		case "assign":
+			reply = h.telegramAssign(ctx, wsID, actorID, args)
 		case "start", "help":
 			reply = "Welcome to Multica bot! Available commands:\n" +
 				"/approve <issue-id> — move to In Review\n" +
 				"/reject <issue-id> — send back to Todo\n" +
-				"/comment <issue-id> <text...> — post a comment\n\n" +
-				"Or just send a message in plain text and I'll understand it."
+				"/done <issue-id> — mark as Done\n" +
+				"/comment <issue-id> <text...> — post a comment\n" +
+				"/assign <issue-id> <username-or-agent> — reassign\n\n" +
+				"💡 *Tip:* Reply directly to a notification message to post a comment on that issue."
 		default:
 			// Unknown slash command — also route to NL bot.
 			nlReply, err := nlbot.Process(ctx, h.Queries, wsUUID, link.UserID, text)
@@ -328,17 +347,16 @@ func (h *Handler) HandleTelegramWebhook(w http.ResponseWriter, r *http.Request) 
 	if reply != "" {
 		_ = TelegramSendMessage(ctx, integration.BotToken, chatID, reply, nil)
 	}
-	w.WriteHeader(http.StatusOK)
 }
 
 func (h *Handler) handleTelegramCallback(
 	ctx context.Context,
 	wsID string,
-	wsUUID interface{ String() string },
+	wsUUID pgtype.UUID,
 	integration db.TelegramIntegration,
 	cb *telegramCallbackQuery,
 ) {
-	wsUUIDParsed := parseUUID(wsID)
+	wsUUIDParsed := wsUUID
 	link, err := h.Queries.GetTelegramUserLinkByChatID(ctx, db.GetTelegramUserLinkByChatIDParams{
 		WorkspaceID:    wsUUIDParsed,
 		TelegramChatID: cb.From.ID,
@@ -360,6 +378,8 @@ func (h *Handler) handleTelegramCallback(
 		reply = h.telegramApprove(ctx, wsID, actorID, []string{issueID})
 	case "reject":
 		reply = h.telegramReject(ctx, wsID, actorID, []string{issueID})
+	case "done":
+		reply = h.telegramMarkDone(ctx, wsID, actorID, []string{issueID})
 	}
 
 	if reply != "" {
@@ -424,6 +444,14 @@ func (h *Handler) telegramComment(ctx context.Context, wsID, actorID string, arg
 		return fmt.Sprintf("⚠️ Issue %q not found.", args[0])
 	}
 	content := strings.Join(args[1:], " ")
+
+	// Thread the reply under the latest agent root comment so it appears
+	// inside the agent's output thread rather than as a new top-level comment.
+	parentID := pgtype.UUID{}
+	if agentRoot, err := h.Queries.GetLatestAgentRootComment(ctx, issue.ID); err == nil {
+		parentID = agentRoot.ID
+	}
+
 	comment, err := h.Queries.CreateComment(ctx, db.CreateCommentParams{
 		IssueID:     issue.ID,
 		WorkspaceID: parseUUID(wsID),
@@ -431,6 +459,7 @@ func (h *Handler) telegramComment(ctx context.Context, wsID, actorID string, arg
 		AuthorID:    parseUUID(actorID),
 		Content:     content,
 		Type:        "comment",
+		ParentID:    parentID,
 	})
 	if err != nil {
 		return "⚠️ Failed to post comment."
@@ -440,7 +469,133 @@ func (h *Handler) telegramComment(ctx context.Context, wsID, actorID string, arg
 		"issue_title":  issue.Title,
 		"issue_status": issue.Status,
 	})
+
+	// Mirror the HTTP comment handler: if the issue is assigned to an agent
+	// with on_comment trigger, enqueue a task so the agent picks up the reply.
+	if h.shouldEnqueueOnComment(ctx, issue) {
+		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, comment.ID); err != nil {
+			slog.Warn("telegram: enqueue agent task on comment failed", "issue_id", issue.ID, "error", err)
+		}
+	}
+
 	return fmt.Sprintf("💬 Comment posted on *%s*.", issue.Title)
+}
+
+func (h *Handler) telegramMarkDone(ctx context.Context, wsID, actorID string, args []string) string {
+	if len(args) == 0 {
+		return "Usage: /done <issue-id>"
+	}
+	issue, err := h.getIssueInWorkspace(ctx, wsID, args[0])
+	if err != nil {
+		return fmt.Sprintf("⚠️ Issue %q not found.", args[0])
+	}
+	prev := issue.Status
+	updated, err := h.Queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:     issue.ID,
+		Status: "done",
+	})
+	if err != nil {
+		return "⚠️ Failed to update issue."
+	}
+	h.publish(protocol.EventIssueUpdated, wsID, "member", actorID, map[string]any{
+		"issue":          updated,
+		"status_changed": true,
+		"prev_status":    prev,
+	})
+	return fmt.Sprintf("✔️ *%s* marked as Done.", updated.Title)
+}
+
+func (h *Handler) telegramAssign(ctx context.Context, wsID, actorID string, args []string) string {
+	if len(args) < 2 {
+		return "Usage: /assign <issue-id> <member-email-or-agent-name>"
+	}
+	issue, err := h.getIssueInWorkspace(ctx, wsID, args[0])
+	if err != nil {
+		return fmt.Sprintf("⚠️ Issue %q not found.", args[0])
+	}
+	target := strings.Join(args[1:], " ")
+
+	wsUUID := parseUUID(wsID)
+	pos := pgtype.Float8{Float64: issue.Position, Valid: true}
+
+	// Try to find a member by email or name.
+	members, err := h.Queries.ListMembersWithUser(ctx, wsUUID)
+	if err == nil {
+		for _, m := range members {
+			if strings.EqualFold(m.UserEmail, target) || strings.EqualFold(m.UserName, target) {
+				updated, err := h.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+					ID:            issue.ID,
+					Title:         util.StrToText(issue.Title),
+					Description:   issue.Description,
+					Status:        util.StrToText(issue.Status),
+					Priority:      util.StrToText(issue.Priority),
+					AssigneeType:  util.StrToText("member"),
+					AssigneeID:    m.UserID,
+					Position:      pos,
+					DueDate:       issue.DueDate,
+					ParentIssueID: issue.ParentIssueID,
+					ProjectID:     issue.ProjectID,
+				})
+				if err != nil {
+					return "⚠️ Failed to reassign."
+				}
+				h.publish(protocol.EventIssueUpdated, wsID, "member", actorID, map[string]any{
+					"issue":            issueToResponse(updated, ""),
+					"assignee_changed": true,
+				})
+				return fmt.Sprintf("👤 *%s* reassigned to %s.", issue.Title, m.UserName)
+			}
+		}
+	}
+
+	// Try to find an agent by name.
+	agents, err2 := h.Queries.ListAgents(ctx, wsUUID)
+	if err2 == nil {
+		for _, a := range agents {
+			if strings.EqualFold(a.Name, target) {
+				updated, err := h.Queries.UpdateIssue(ctx, db.UpdateIssueParams{
+					ID:            issue.ID,
+					Title:         util.StrToText(issue.Title),
+					Description:   issue.Description,
+					Status:        util.StrToText(issue.Status),
+					Priority:      util.StrToText(issue.Priority),
+					AssigneeType:  util.StrToText("agent"),
+					AssigneeID:    a.ID,
+					Position:      pos,
+					DueDate:       issue.DueDate,
+					ParentIssueID: issue.ParentIssueID,
+					ProjectID:     issue.ProjectID,
+				})
+				if err != nil {
+					return "⚠️ Failed to reassign."
+				}
+				h.publish(protocol.EventIssueUpdated, wsID, "member", actorID, map[string]any{
+					"issue":            issueToResponse(updated, ""),
+					"assignee_changed": true,
+				})
+				return fmt.Sprintf("🤖 *%s* assigned to agent %s.", issue.Title, a.Name)
+			}
+		}
+	}
+
+	return fmt.Sprintf("⚠️ Could not find member or agent %q. Use email, full name, or agent name.", target)
+}
+
+// extractIssueIDFromText parses an issue UUID or short ID from a message that
+// contains a Multica issue URL (e.g. "http://localhost:3000/issues/<id>").
+func extractIssueIDFromText(text string) string {
+	const marker = "/issues/"
+	idx := strings.LastIndex(text, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := text[idx+len(marker):]
+	// Trim any trailing whitespace or punctuation.
+	end := strings.IndexAny(rest, " \t\n\r)")
+	if end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(rest)
 }
 
 // ── Telegram Bot API helpers ──────────────────────────────────────────────────
@@ -481,21 +636,49 @@ func TelegramSendMessage(ctx context.Context, botToken string, chatID int64, tex
 }
 
 // BuildIssueInlineKeyboard creates a Telegram inline keyboard for an issue.
-func BuildIssueInlineKeyboard(issueID string, actions []string) *telegramInlineKeyboard {
-	var buttons [][]telegramInlineButton
-	var row []telegramInlineButton
+// BuildIssueInlineKeyboard builds an inline keyboard for an issue notification.
+// actions: "approve", "reject", "done", "open" (URL button using appURL).
+func BuildIssueInlineKeyboard(issueID string, actions []string, appURL ...string) *telegramInlineKeyboard {
+	if len(actions) == 0 {
+		return nil
+	}
+	baseURL := ""
+	if len(appURL) > 0 {
+		baseURL = appURL[0]
+	}
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
+	}
+
+	var actionRow []telegramInlineButton
+	var urlRow []telegramInlineButton
 	for _, action := range actions {
 		switch action {
 		case "approve":
-			row = append(row, telegramInlineButton{Text: "✅ Approve", CallbackData: "approve:" + issueID})
+			actionRow = append(actionRow, telegramInlineButton{Text: "✅ Approve", CallbackData: "approve:" + issueID})
 		case "reject":
-			row = append(row, telegramInlineButton{Text: "↩️ Reject", CallbackData: "reject:" + issueID})
+			actionRow = append(actionRow, telegramInlineButton{Text: "↩️ Reject", CallbackData: "reject:" + issueID})
+		case "done":
+			actionRow = append(actionRow, telegramInlineButton{Text: "✔️ Mark Done", CallbackData: "done:" + issueID})
+		case "open":
+			// Telegram rejects non-HTTPS URLs in inline keyboard buttons.
+			if strings.HasPrefix(baseURL, "https://") {
+				urlRow = append(urlRow, telegramInlineButton{Text: "🔗 Open in Multica", URL: baseURL + "/issues/" + issueID})
+			}
 		}
 	}
-	if len(row) > 0 {
-		buttons = append(buttons, row)
+
+	var rows [][]telegramInlineButton
+	if len(actionRow) > 0 {
+		rows = append(rows, actionRow)
 	}
-	return &telegramInlineKeyboard{InlineKeyboard: buttons}
+	if len(urlRow) > 0 {
+		rows = append(rows, urlRow)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return &telegramInlineKeyboard{InlineKeyboard: rows}
 }
 
 func telegramGetMe(ctx context.Context, botToken string) (*telegramUser, error) {
@@ -567,17 +750,21 @@ func telegramWebhookURL(wsID string) string {
 
 // ── Telegram API types ────────────────────────────────────────────────────────
 
-type telegramUpdate struct {
+// TelegramUpdate is exported so the polling service can decode getUpdates responses.
+type TelegramUpdate struct {
 	UpdateID      int64                  `json:"update_id"`
 	Message       *telegramMessage       `json:"message"`
 	CallbackQuery *telegramCallbackQuery `json:"callback_query"`
 }
 
+type telegramUpdate = TelegramUpdate
+
 type telegramMessage struct {
-	MessageID int64        `json:"message_id"`
-	From      *telegramUser `json:"from"`
-	Chat      telegramChat `json:"chat"`
-	Text      string       `json:"text"`
+	MessageID        int64            `json:"message_id"`
+	From             *telegramUser    `json:"from"`
+	Chat             telegramChat     `json:"chat"`
+	Text             string           `json:"text"`
+	ReplyToMessage   *telegramMessage `json:"reply_to_message"`
 }
 
 type telegramCallbackQuery struct {
@@ -601,5 +788,6 @@ type telegramInlineKeyboard struct {
 
 type telegramInlineButton struct {
 	Text         string `json:"text"`
-	CallbackData string `json:"callback_data"`
+	CallbackData string `json:"callback_data,omitempty"`
+	URL          string `json:"url,omitempty"`
 }
