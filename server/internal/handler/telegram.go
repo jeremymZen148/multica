@@ -52,7 +52,7 @@ type upsertTelegramRequest struct {
 // POST /api/integrations/telegram
 func (h *Handler) UpsertTelegramIntegration(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -100,7 +100,7 @@ func (h *Handler) UpsertTelegramIntegration(w http.ResponseWriter, r *http.Reque
 // GetTelegramIntegration returns the workspace's Telegram integration (token hidden).
 // GET /api/integrations/telegram
 func (h *Handler) GetTelegramIntegration(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -120,7 +120,7 @@ func (h *Handler) GetTelegramIntegration(w http.ResponseWriter, r *http.Request)
 // DeleteTelegramIntegration removes the Telegram integration for the workspace.
 // DELETE /api/integrations/telegram
 func (h *Handler) DeleteTelegramIntegration(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -153,7 +153,7 @@ type linkTelegramUserRequest struct {
 // POST /api/integrations/telegram/link
 func (h *Handler) LinkTelegramUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -197,7 +197,7 @@ func (h *Handler) LinkTelegramUser(w http.ResponseWriter, r *http.Request) {
 // UnlinkTelegramUser removes the Telegram link for the authenticated user.
 // DELETE /api/integrations/telegram/link
 func (h *Handler) UnlinkTelegramUser(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return

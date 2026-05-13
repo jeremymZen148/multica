@@ -99,7 +99,7 @@ func (h *Handler) SlackConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, SlackConnectResponse{Configured: false})
 		return
 	}
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	authURL := fmt.Sprintf(
 		"https://slack.com/oauth/v2/authorize?client_id=%s&scope=chat:write,commands,users:read&redirect_uri=%s&state=%s",
 		url.QueryEscape(slackClientID()),
@@ -162,7 +162,7 @@ func (h *Handler) SlackCallback(w http.ResponseWriter, r *http.Request) {
 // GetSlackIntegration returns the current workspace's Slack integration.
 // GET /api/integrations/slack
 func (h *Handler) GetSlackIntegration(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -182,7 +182,7 @@ func (h *Handler) GetSlackIntegration(w http.ResponseWriter, r *http.Request) {
 // DeleteSlackIntegration removes the Slack integration for the workspace.
 // DELETE /api/integrations/slack
 func (h *Handler) DeleteSlackIntegration(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -206,7 +206,7 @@ type linkSlackUserRequest struct {
 // POST /api/integrations/slack/link
 func (h *Handler) LinkSlackUser(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -243,7 +243,7 @@ func (h *Handler) LinkSlackUser(w http.ResponseWriter, r *http.Request) {
 // UnlinkSlackUser removes the Slack account link for the authenticated user.
 // DELETE /api/integrations/slack/link
 func (h *Handler) UnlinkSlackUser(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return

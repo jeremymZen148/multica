@@ -25,7 +25,7 @@ type aiProviderConfigRequest struct {
 // The API key value is never returned — only whether one is set.
 // Access is gated by the RequireWorkspaceRoleFromURL middleware in router.go.
 func (h *Handler) GetAIProviderConfig(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -53,7 +53,7 @@ func (h *Handler) GetAIProviderConfig(w http.ResponseWriter, r *http.Request) {
 
 // UpsertAIProviderConfig saves provider/model/api_key for the workspace.
 func (h *Handler) UpsertAIProviderConfig(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
@@ -105,7 +105,7 @@ func (h *Handler) UpsertAIProviderConfig(w http.ResponseWriter, r *http.Request)
 
 // DeleteAIProviderConfig removes the workspace's AI provider config.
 func (h *Handler) DeleteAIProviderConfig(w http.ResponseWriter, r *http.Request) {
-	wsID := r.Header.Get("X-Workspace-ID")
+	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
 	if !ok {
 		return
