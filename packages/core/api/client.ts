@@ -100,6 +100,8 @@ import type {
   SquadMember,
   SquadMemberStatusListResponse,
 } from "../types";
+import type { SlackIntegration, SlackConnectResponse, SlackUserLink } from "../types/slack";
+import type { TelegramIntegration, TelegramUserLink } from "../types/telegram";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
   CloudRuntimeNode,
@@ -1770,5 +1772,60 @@ export class ApiClient {
 
   async listIssuePullRequests(issueId: string): Promise<{ pull_requests: GitHubPullRequest[] }> {
     return this.fetch(`/api/issues/${issueId}/pull-requests`);
+  }
+
+  // Slack integration
+  async getSlackConnectURL(workspaceId: string): Promise<SlackConnectResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/slack/connect`);
+  }
+
+  async getSlackIntegration(workspaceId: string): Promise<SlackIntegration | null> {
+    return this.fetch(`/api/workspaces/${workspaceId}/slack`);
+  }
+
+  async deleteSlackIntegration(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/slack`, { method: "DELETE" });
+  }
+
+  async linkSlackUser(workspaceId: string, slackUserId: string): Promise<SlackUserLink> {
+    return this.fetch(`/api/integrations/slack/link`, {
+      method: "POST",
+      body: JSON.stringify({ slack_user_id: slackUserId }),
+    });
+  }
+
+  async unlinkSlackUser(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/integrations/slack/link`, { method: "DELETE" });
+  }
+
+  // Telegram integration
+  async getTelegramIntegration(workspaceId: string): Promise<TelegramIntegration | null> {
+    return this.fetch(`/api/workspaces/${workspaceId}/telegram`);
+  }
+
+  async upsertTelegramIntegration(workspaceId: string, botToken: string): Promise<TelegramIntegration> {
+    return this.fetch(`/api/workspaces/${workspaceId}/telegram`, {
+      method: "POST",
+      body: JSON.stringify({ bot_token: botToken }),
+    });
+  }
+
+  async deleteTelegramIntegration(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/telegram`, { method: "DELETE" });
+  }
+
+  async linkTelegramUser(
+    workspaceId: string,
+    telegramChatId: number,
+    telegramUsername?: string,
+  ): Promise<TelegramUserLink> {
+    return this.fetch(`/api/integrations/telegram/link`, {
+      method: "POST",
+      body: JSON.stringify({ telegram_chat_id: telegramChatId, telegram_username: telegramUsername }),
+    });
+  }
+
+  async unlinkTelegramUser(workspaceId: string): Promise<void> {
+    await this.fetch(`/api/integrations/telegram/link`, { method: "DELETE" });
   }
 }

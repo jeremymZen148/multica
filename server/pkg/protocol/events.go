@@ -122,4 +122,16 @@ const (
 	EventPullRequestLinked         = "pull_request:linked"
 	EventPullRequestUpdated        = "pull_request:updated"
 	EventPullRequestUnlinked       = "pull_request:unlinked"
+
+	// Slack integration events
+	EventSlackIntegrationConnected    = "slack_integration:connected"
+	EventSlackIntegrationDisconnected = "slack_integration:disconnected"
+
+	// Telegram integration events
+	EventTelegramIntegrationConnected    = "telegram_integration:connected"
+	EventTelegramIntegrationDisconnected = "telegram_integration:disconnected"
+
+	// GitHub issue sync events
+	EventGitHubIssueSyncCreated = "github_issue_sync:created"
+	EventGitHubIssueSyncDeleted = "github_issue_sync:deleted"
 )
