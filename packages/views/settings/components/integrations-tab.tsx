@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { Input } from "@multica/ui/components/ui/input";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
@@ -28,8 +29,12 @@ import { aiProviderConfigOptions } from "@multica/core/ai-provider/queries";
 import { useUpsertAIProviderConfig, useDeleteAIProviderConfig } from "@multica/core/ai-provider/mutations";
 import { githubRepoSyncsOptions } from "@multica/core/github-sync/queries";
 import { useUpsertGitHubRepoSync, useDeleteGitHubRepoSync } from "@multica/core/github-sync/mutations";
+import { logSourceListOptions } from "@multica/core/log-source/queries";
+import { useDeleteLogSource, useTriggerLogSourcePoll } from "@multica/core/log-source/mutations";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { useT } from "../../i18n";
+import { LogSourceDialog } from "../../logs/log-source-dialog";
+import type { LogSource } from "@multica/core/types/log-source";
 
 function GitHubMark({ className }: { className?: string }) {
   return (
@@ -62,6 +67,132 @@ function BotMark({ className }: { className?: string }) {
       <circle cx="9" cy="14" r="1.5" />
       <circle cx="15" cy="14" r="1.5" />
     </svg>
+  );
+}
+
+function LogSourcesSection({ wsId }: { wsId: string }) {
+  const { t } = useT("settings");
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingSource, setEditingSource] = useState<LogSource | undefined>(undefined);
+
+  const { data: logSources = [] } = useQuery(logSourceListOptions(wsId));
+  const deleteLogSource = useDeleteLogSource(wsId);
+  const triggerPoll = useTriggerLogSourcePoll(wsId);
+
+  async function handleDelete(id: string) {
+    try {
+      await deleteLogSource.mutateAsync(id);
+      toast.success(t(($) => $.integrations.log_sources_toast_deleted));
+    } catch {
+      toast.error("Failed to remove log source");
+    }
+  }
+
+  async function handlePollNow(id: string) {
+    try {
+      await triggerPoll.mutateAsync(id);
+      toast.success(t(($) => $.integrations.log_sources_toast_poll_triggered));
+    } catch {
+      toast.error("Failed to trigger poll");
+    }
+  }
+
+  function formatLastPolled(dateStr?: string): string {
+    if (!dateStr) return t(($) => $.integrations.log_sources_never_polled);
+    const date = new Date(dateStr);
+    const diffMs = Date.now() - date.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    return `${Math.floor(diffHr / 24)}d ago`;
+  }
+
+  return (
+    <div className="space-y-3">
+      {logSources.length === 0 ? (
+        <p className="text-xs text-muted-foreground">{t(($) => $.integrations.log_sources_none)}</p>
+      ) : (
+        <div className="space-y-2">
+          {logSources.map((source) => (
+            <div
+              key={source.id}
+              className="flex items-center justify-between gap-2 rounded-md border px-3 py-2"
+            >
+              <div className="min-w-0 space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <p className="truncate text-xs font-medium">{source.name}</p>
+                  <Badge variant={source.enabled ? "secondary" : "outline"} className="text-[10px]">
+                    {source.provider === "cloudwatch"
+                      ? t(($) => $.integrations.log_sources_provider_cloudwatch)
+                      : t(($) => $.integrations.log_sources_provider_s3)}
+                  </Badge>
+                  <Badge variant={source.enabled ? "secondary" : "outline"} className="text-[10px]">
+                    {source.enabled
+                      ? t(($) => $.integrations.log_sources_enabled)
+                      : t(($) => $.integrations.log_sources_disabled)}
+                  </Badge>
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  {t(($) => $.integrations.log_sources_last_polled)}: {formatLastPolled(source.last_polled_at)}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => handlePollNow(source.id)}
+                  disabled={triggerPoll.isPending}
+                >
+                  {triggerPoll.isPending
+                    ? t(($) => $.integrations.log_sources_polling)
+                    : t(($) => $.integrations.log_sources_poll_now)}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    setEditingSource(source);
+                    setDialogOpen(true);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => handleDelete(source.id)}
+                  disabled={deleteLogSource.isPending}
+                >
+                  {t(($) => $.integrations.log_sources_delete)}
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Button
+        size="sm"
+        onClick={() => {
+          setEditingSource(undefined);
+          setDialogOpen(true);
+        }}
+      >
+        {t(($) => $.integrations.log_sources_add)}
+      </Button>
+
+      <LogSourceDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        wsId={wsId}
+        existingSource={editingSource}
+      />
+    </div>
   );
 }
 
@@ -746,6 +877,26 @@ export function IntegrationsTab() {
               <p className="text-xs text-muted-foreground">
                 {t(($) => $.integrations.manage_hint)}
               </p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Log Sources */}
+        <Card>
+          <CardContent className="space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="space-y-1 flex-1">
+                <p className="text-sm font-medium">{t(($) => $.integrations.log_sources_title)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {t(($) => $.integrations.log_sources_description)}
+                </p>
+              </div>
+            </div>
+
+            {canManage ? (
+              <LogSourcesSection wsId={wsId} />
+            ) : (
+              <p className="text-xs text-muted-foreground">{t(($) => $.integrations.manage_hint)}</p>
             )}
           </CardContent>
         </Card>

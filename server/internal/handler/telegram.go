@@ -305,7 +305,7 @@ func (h *Handler) ProcessTelegramUpdate(ctx context.Context, wsID string, wsUUID
 	var reply string
 	if !strings.HasPrefix(parts[0], "/") {
 		// Free-text message — route to NL bot.
-		nlReply, err := nlbot.Process(ctx, h.Queries, wsUUID, link.UserID, text)
+		nlReply, err := nlbot.Process(ctx, h.Queries, h.TaskService, wsUUID, link.UserID, text)
 		if err != nil {
 			reply = "⚠️ " + err.Error()
 		} else {
@@ -335,7 +335,7 @@ func (h *Handler) ProcessTelegramUpdate(ctx context.Context, wsID string, wsUUID
 				"💡 *Tip:* Reply directly to a notification message to post a comment on that issue."
 		default:
 			// Unknown slash command — also route to NL bot.
-			nlReply, err := nlbot.Process(ctx, h.Queries, wsUUID, link.UserID, text)
+			nlReply, err := nlbot.Process(ctx, h.Queries, h.TaskService, wsUUID, link.UserID, text)
 			if err != nil {
 				reply = fmt.Sprintf("Unknown command /%s. Try /help.", cmd)
 			} else {

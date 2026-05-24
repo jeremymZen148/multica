@@ -337,7 +337,7 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 		h.slackComment(w, ctx, wsID, actorID, parts[1:])
 	default:
 		// Route everything else to the NL bot.
-		reply, err := nlbot.Process(ctx, h.Queries, integration.WorkspaceID, link.UserID, text)
+		reply, err := nlbot.Process(ctx, h.Queries, h.TaskService, integration.WorkspaceID, link.UserID, text)
 		if err != nil {
 			writeJSON(w, http.StatusOK, slackEphemeral("⚠️ "+err.Error()))
 			return

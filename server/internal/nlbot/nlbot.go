@@ -9,11 +9,17 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// TaskEnqueuer is satisfied by *service.TaskService. Defined here so nlbot
+// stays independent of the service package.
+type TaskEnqueuer interface {
+	EnqueueTaskForIssue(ctx context.Context, issue db.Issue, triggerCommentID ...pgtype.UUID) (db.AgentTaskQueue, error)
+}
+
 const systemPrompt = `You are a Multica assistant. Multica is an AI-native task management platform where AI agents are first-class citizens alongside human team members.
 
-Help the user manage their workspace: list issues, update statuses, assign work, add comments, and create new items. When the user asks you to do something, use the available tools and confirm briefly what was done. When listing issues, be concise — show title, status, and ID.
+Help the user manage their workspace: list issues, update statuses and priorities, assign work to members or agents, add comments, create new items, and trigger agent runs. When the user asks you to do something, use the available tools and confirm briefly what was done. When listing issues, be concise — show title, status, priority, and ID.
 
-Always use the UUID returned by list_issues or get_issue when calling other tools that require an issue_id.`
+Always use the UUID returned by list_issues or get_issue when calling other tools that require an issue_id. When assigning an issue, call list_members or list_agents first to resolve the name to a UUID, then call assign_issue. To start an agent on an issue, the issue must have an agent assigned — use assign_issue first if needed, then trigger_agent.`
 
 const (
 	defaultAnthropicModel = "claude-sonnet-4-6"
@@ -28,7 +34,8 @@ type toolExecutorFn func(name string, args map[string]any) (string, error)
 // It loads the workspace's provider config from the DB (falls back to env vars),
 // sends the message to the configured LLM with tool definitions, executes any
 // tool calls the LLM requests, and returns the final text response.
-func Process(ctx context.Context, queries *db.Queries, wsID, userID pgtype.UUID, message string) (string, error) {
+// enqueuer may be nil — trigger_agent will return an error if called without one.
+func Process(ctx context.Context, queries *db.Queries, enqueuer TaskEnqueuer, wsID, userID pgtype.UUID, message string) (string, error) {
 	provider, model, apiKey := loadConfig(ctx, queries, wsID)
 	if apiKey == "" {
 		return "", fmt.Errorf("no API key configured for AI provider %q — set it in Settings → Integrations → AI Provider or configure the server environment", provider)
@@ -36,7 +43,7 @@ func Process(ctx context.Context, queries *db.Queries, wsID, userID pgtype.UUID,
 
 	tools := buildToolDefs()
 	exec := func(name string, args map[string]any) (string, error) {
-		return executeTool(ctx, queries, wsID, userID, name, args)
+		return executeTool(ctx, queries, enqueuer, wsID, userID, name, args)
 	}
 
 	switch provider {

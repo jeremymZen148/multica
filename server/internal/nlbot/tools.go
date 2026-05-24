@@ -33,6 +33,11 @@ func buildToolDefs() []toolDef {
 						"description": "Filter by status. One of: todo, in_progress, in_review, done. Omit to return all.",
 						"enum":        []string{"todo", "in_progress", "in_review", "done"},
 					},
+					"priority": map[string]any{
+						"type":        "string",
+						"description": "Filter by priority. One of: urgent, high, medium, low, no_priority. Omit to return all.",
+						"enum":        []string{"urgent", "high", "medium", "low", "no_priority"},
+					},
 					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Maximum number of issues to return (default 10, max 50).",
@@ -111,15 +116,94 @@ func buildToolDefs() []toolDef {
 						"description": "Initial status (default: todo).",
 						"enum":        []string{"todo", "in_progress", "in_review", "done"},
 					},
+					"priority": map[string]any{
+						"type":        "string",
+						"description": "Priority (default: medium).",
+						"enum":        []string{"urgent", "high", "medium", "low", "no_priority"},
+					},
 				},
 				"required": []string{"title"},
+			},
+		},
+		{
+			Name:        "set_issue_priority",
+			Description: "Change the priority of an issue.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"issue_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the issue.",
+					},
+					"priority": map[string]any{
+						"type":        "string",
+						"description": "New priority.",
+						"enum":        []string{"urgent", "high", "medium", "low", "no_priority"},
+					},
+				},
+				"required": []string{"issue_id", "priority"},
+			},
+		},
+		{
+			Name:        "list_members",
+			Description: "List workspace members. Returns name, email, and user UUID for each member. Use this to find the right user UUID before calling assign_issue.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+		{
+			Name:        "list_agents",
+			Description: "List AI agents in this workspace. Returns name, status, and agent UUID. Use this to find the right agent UUID before calling assign_issue.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+		{
+			Name:        "assign_issue",
+			Description: "Assign an issue to a member or agent. Call list_members or list_agents first to get the assignee UUID.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"issue_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the issue to assign.",
+					},
+					"assignee_type": map[string]any{
+						"type":        "string",
+						"description": "Whether the assignee is a human member or an AI agent.",
+						"enum":        []string{"member", "agent"},
+					},
+					"assignee_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the member (user UUID from list_members) or agent (agent UUID from list_agents).",
+					},
+				},
+				"required": []string{"issue_id", "assignee_type", "assignee_id"},
+			},
+		},
+		{
+			Name:        "trigger_agent",
+			Description: "Start an agent run on an issue. The issue must already have an agent assigned (use assign_issue with assignee_type=agent first). Returns the queued task ID.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"issue_id": map[string]any{
+						"type":        "string",
+						"description": "UUID of the issue to run the agent on.",
+					},
+				},
+				"required": []string{"issue_id"},
 			},
 		},
 	}
 }
 
 // executeTool dispatches a named tool call to the appropriate DB operation.
-func executeTool(ctx context.Context, queries *db.Queries, wsID, userID pgtype.UUID, name string, args map[string]any) (string, error) {
+func executeTool(ctx context.Context, queries *db.Queries, enqueuer TaskEnqueuer, wsID, userID pgtype.UUID, name string, args map[string]any) (string, error) {
 	switch name {
 	case "list_issues":
 		return toolListIssues(ctx, queries, wsID, args)
@@ -127,10 +211,20 @@ func executeTool(ctx context.Context, queries *db.Queries, wsID, userID pgtype.U
 		return toolGetIssue(ctx, queries, wsID, args)
 	case "set_issue_status":
 		return toolSetIssueStatus(ctx, queries, wsID, args)
+	case "set_issue_priority":
+		return toolSetIssuePriority(ctx, queries, wsID, args)
 	case "add_comment":
 		return toolAddComment(ctx, queries, wsID, userID, args)
 	case "create_issue":
 		return toolCreateIssue(ctx, queries, wsID, userID, args)
+	case "list_members":
+		return toolListMembers(ctx, queries, wsID)
+	case "list_agents":
+		return toolListAgents(ctx, queries, wsID)
+	case "assign_issue":
+		return toolAssignIssue(ctx, queries, wsID, args)
+	case "trigger_agent":
+		return toolTriggerAgent(ctx, queries, enqueuer, wsID, args)
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -157,6 +251,9 @@ func toolListIssues(ctx context.Context, queries *db.Queries, wsID pgtype.UUID, 
 	}
 	if statusVal, ok := args["status"].(string); ok && statusVal != "" {
 		params.Status = pgtype.Text{String: statusVal, Valid: true}
+	}
+	if priorityVal, ok := args["priority"].(string); ok && priorityVal != "" {
+		params.Priority = pgtype.Text{String: priorityVal, Valid: true}
 	}
 
 	rows, err := queries.ListIssues(ctx, params)
@@ -297,6 +394,11 @@ func toolCreateIssue(ctx context.Context, queries *db.Queries, wsID, userID pgty
 		status = s
 	}
 
+	priority := "medium"
+	if p, ok := args["priority"].(string); ok && validPriority(p) {
+		priority = p
+	}
+
 	var desc pgtype.Text
 	if d, ok := args["description"].(string); ok && d != "" {
 		desc = pgtype.Text{String: d, Valid: true}
@@ -313,7 +415,7 @@ func toolCreateIssue(ctx context.Context, queries *db.Queries, wsID, userID pgty
 		Title:       title,
 		Description: desc,
 		Status:      status,
-		Priority:    "medium",
+		Priority:    priority,
 		CreatorType: "member",
 		CreatorID:   userID,
 		Number:      number,
@@ -322,7 +424,186 @@ func toolCreateIssue(ctx context.Context, queries *db.Queries, wsID, userID pgty
 	if err != nil {
 		return "", fmt.Errorf("create_issue: %w", err)
 	}
-	return fmt.Sprintf(`{"id":%q,"title":%q,"status":%q,"number":%d}`, uuidStr(issue.ID), issue.Title, issue.Status, issue.Number), nil
+	return fmt.Sprintf(`{"id":%q,"title":%q,"status":%q,"priority":%q,"number":%d}`, uuidStr(issue.ID), issue.Title, issue.Status, issue.Priority, issue.Number), nil
+}
+
+func toolSetIssuePriority(ctx context.Context, queries *db.Queries, wsID pgtype.UUID, args map[string]any) (string, error) {
+	issueIDStr, _ := args["issue_id"].(string)
+	priority, _ := args["priority"].(string)
+	if issueIDStr == "" || priority == "" {
+		return "", fmt.Errorf("set_issue_priority: issue_id and priority are required")
+	}
+	if !validPriority(priority) {
+		return "", fmt.Errorf("set_issue_priority: invalid priority %q", priority)
+	}
+	issueUUID, err := parseUUID(issueIDStr)
+	if err != nil {
+		return "", fmt.Errorf("set_issue_priority: invalid issue_id: %w", err)
+	}
+
+	if _, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID:          issueUUID,
+		WorkspaceID: wsID,
+	}); err == pgx.ErrNoRows {
+		return "", fmt.Errorf("issue not found")
+	} else if err != nil {
+		return "", fmt.Errorf("set_issue_priority: %w", err)
+	}
+
+	updated, err := queries.UpdateIssuePriority(ctx, db.UpdateIssuePriorityParams{
+		ID:       issueUUID,
+		Priority: priority,
+	})
+	if err != nil {
+		return "", fmt.Errorf("set_issue_priority: %w", err)
+	}
+	return fmt.Sprintf(`{"id":%q,"title":%q,"priority":%q}`, uuidStr(updated.ID), updated.Title, updated.Priority), nil
+}
+
+func toolListMembers(ctx context.Context, queries *db.Queries, wsID pgtype.UUID) (string, error) {
+	rows, err := queries.ListMembersWithUser(ctx, wsID)
+	if err != nil {
+		return "", fmt.Errorf("list_members: %w", err)
+	}
+
+	type memberItem struct {
+		UserID string `json:"user_id"`
+		Name   string `json:"name"`
+		Email  string `json:"email"`
+	}
+	items := make([]memberItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, memberItem{
+			UserID: uuidStr(r.UserID),
+			Name:   r.UserName,
+			Email:  r.UserEmail,
+		})
+	}
+	b, _ := json.Marshal(items)
+	return string(b), nil
+}
+
+func toolListAgents(ctx context.Context, queries *db.Queries, wsID pgtype.UUID) (string, error) {
+	rows, err := queries.ListAgents(ctx, wsID)
+	if err != nil {
+		return "", fmt.Errorf("list_agents: %w", err)
+	}
+
+	type agentItem struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Status string `json:"status"`
+	}
+	items := make([]agentItem, 0, len(rows))
+	for _, r := range rows {
+		items = append(items, agentItem{
+			ID:     uuidStr(r.ID),
+			Name:   r.Name,
+			Status: r.Status,
+		})
+	}
+	b, _ := json.Marshal(items)
+	return string(b), nil
+}
+
+func toolAssignIssue(ctx context.Context, queries *db.Queries, wsID pgtype.UUID, args map[string]any) (string, error) {
+	issueIDStr, _ := args["issue_id"].(string)
+	assigneeType, _ := args["assignee_type"].(string)
+	assigneeIDStr, _ := args["assignee_id"].(string)
+	if issueIDStr == "" || assigneeType == "" || assigneeIDStr == "" {
+		return "", fmt.Errorf("assign_issue: issue_id, assignee_type, and assignee_id are required")
+	}
+	if assigneeType != "member" && assigneeType != "agent" {
+		return "", fmt.Errorf("assign_issue: assignee_type must be member or agent")
+	}
+
+	issueUUID, err := parseUUID(issueIDStr)
+	if err != nil {
+		return "", fmt.Errorf("assign_issue: invalid issue_id: %w", err)
+	}
+	assigneeUUID, err := parseUUID(assigneeIDStr)
+	if err != nil {
+		return "", fmt.Errorf("assign_issue: invalid assignee_id: %w", err)
+	}
+
+	if _, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID:          issueUUID,
+		WorkspaceID: wsID,
+	}); err == pgx.ErrNoRows {
+		return "", fmt.Errorf("issue not found")
+	} else if err != nil {
+		return "", fmt.Errorf("assign_issue: %w", err)
+	}
+
+	updated, err := queries.UpdateIssueAssignee(ctx, db.UpdateIssueAssigneeParams{
+		ID:           issueUUID,
+		AssigneeType: pgtype.Text{String: assigneeType, Valid: true},
+		AssigneeID:   assigneeUUID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("assign_issue: %w", err)
+	}
+
+	assigneeName := assigneeIDStr
+	if assigneeType == "member" {
+		if m, err := queries.ListMembersWithUser(ctx, wsID); err == nil {
+			for _, row := range m {
+				if uuidStr(row.UserID) == uuidStr(updated.AssigneeID) {
+					assigneeName = row.UserName
+					break
+				}
+			}
+		}
+	} else {
+		if agents, err := queries.ListAgents(ctx, wsID); err == nil {
+			for _, a := range agents {
+				if uuidStr(a.ID) == uuidStr(updated.AssigneeID) {
+					assigneeName = a.Name
+					break
+				}
+			}
+		}
+	}
+
+	return fmt.Sprintf(`{"id":%q,"title":%q,"assignee_type":%q,"assignee_name":%q}`,
+		uuidStr(updated.ID), updated.Title, assigneeType, assigneeName), nil
+}
+
+func toolTriggerAgent(ctx context.Context, queries *db.Queries, enqueuer TaskEnqueuer, wsID pgtype.UUID, args map[string]any) (string, error) {
+	if enqueuer == nil {
+		return "", fmt.Errorf("trigger_agent: agent dispatch is not available in this context")
+	}
+
+	issueIDStr, _ := args["issue_id"].(string)
+	if issueIDStr == "" {
+		return "", fmt.Errorf("trigger_agent: issue_id is required")
+	}
+	issueUUID, err := parseUUID(issueIDStr)
+	if err != nil {
+		return "", fmt.Errorf("trigger_agent: invalid issue_id: %w", err)
+	}
+
+	issue, err := queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+		ID:          issueUUID,
+		WorkspaceID: wsID,
+	})
+	if err == pgx.ErrNoRows {
+		return "", fmt.Errorf("issue not found")
+	}
+	if err != nil {
+		return "", fmt.Errorf("trigger_agent: %w", err)
+	}
+	if !issue.AssigneeID.Valid || issue.AssigneeType.String != "agent" {
+		return "", fmt.Errorf("trigger_agent: issue %q does not have an agent assigned — use assign_issue with assignee_type=agent first", issueIDStr)
+	}
+
+	task, err := enqueuer.EnqueueTaskForIssue(ctx, issue)
+	if err != nil {
+		return "", fmt.Errorf("trigger_agent: %w", err)
+	}
+
+	return fmt.Sprintf(`{"task_id":%q,"issue_id":%q,"issue_title":%q,"status":"queued"}`,
+		uuidStr(task.ID), uuidStr(issue.ID), issue.Title), nil
 }
 
 // helpers
@@ -330,6 +611,14 @@ func toolCreateIssue(ctx context.Context, queries *db.Queries, wsID, userID pgty
 func validStatus(s string) bool {
 	switch s {
 	case "todo", "in_progress", "in_review", "done":
+		return true
+	}
+	return false
+}
+
+func validPriority(s string) bool {
+	switch s {
+	case "urgent", "high", "medium", "low", "no_priority":
 		return true
 	}
 	return false

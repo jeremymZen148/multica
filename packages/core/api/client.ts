@@ -104,6 +104,7 @@ import type { SlackIntegration, SlackConnectResponse, SlackUserLink } from "../t
 import type { TelegramIntegration, TelegramUserLink } from "../types/telegram";
 import type { AIProviderConfig, AIProviderConfigInput } from "../types/ai-provider";
 import type { GitHubRepoSync, GitHubRepoSyncInput } from "../types/github-sync";
+import type { LogSource, LogErrorPattern, CreateLogSourceInput, UpdateLogSourceInput } from "../types/log-source";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
   CloudRuntimeNode,
@@ -1868,5 +1869,50 @@ export class ApiClient {
     await this.fetch(`/api/workspaces/${workspaceId}/github-sync/${repoOwner}/${repoName}`, {
       method: "DELETE",
     });
+  }
+
+  // Log source integration
+  async listLogSources(workspaceId: string): Promise<LogSource[]> {
+    const result = await this.fetch<LogSource[] | null>(`/api/workspaces/${workspaceId}/log-sources`);
+    return result ?? [];
+  }
+
+  async createLogSource(workspaceId: string, input: CreateLogSourceInput): Promise<LogSource> {
+    return this.fetch(`/api/workspaces/${workspaceId}/log-sources`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async updateLogSource(workspaceId: string, id: string, input: UpdateLogSourceInput): Promise<LogSource> {
+    return this.fetch(`/api/workspaces/${workspaceId}/log-sources/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+    });
+  }
+
+  async deleteLogSource(workspaceId: string, id: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/log-sources/${id}`, { method: "DELETE" });
+  }
+
+  async triggerLogSourcePoll(workspaceId: string, id: string): Promise<{ message: string }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/log-sources/${id}/poll`, { method: "POST" });
+  }
+
+  async listLogErrorPatterns(workspaceId: string, limit = 50, offset = 0): Promise<LogErrorPattern[]> {
+    const result = await this.fetch<LogErrorPattern[] | null>(
+      `/api/workspaces/${workspaceId}/log-error-patterns?limit=${limit}&offset=${offset}`,
+    );
+    return result ?? [];
+  }
+
+  async createIssueFromPattern(workspaceId: string, patternId: string): Promise<unknown> {
+    return this.fetch(`/api/workspaces/${workspaceId}/log-error-patterns/${patternId}/create-issue`, {
+      method: "POST",
+    });
+  }
+
+  async deleteLogErrorPattern(workspaceId: string, patternId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/log-error-patterns/${patternId}`, { method: "DELETE" });
   }
 }

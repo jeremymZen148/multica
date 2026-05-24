@@ -87,6 +87,8 @@
     "./github-sync": "./github-sync/index.ts",
     "./github-sync/queries": "./github-sync/queries.ts",
     "./github-sync/mutations": "./github-sync/mutations.ts",
+    "./log-source/queries": "./log-source/queries.ts",
+    "./log-source/mutations": "./log-source/mutations.ts",
     "./feedback": "./feedback/index.ts",
     "./feedback/mutations": "./feedback/mutations.ts",
     "./realtime": "./realtime/index.ts",

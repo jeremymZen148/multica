@@ -98,6 +98,17 @@ type AgentTaskQueue struct {
 	IsLeaderTask      bool               `json:"is_leader_task"`
 }
 
+type AiProviderConfig struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Provider    string             `json:"provider"`
+	Model       pgtype.Text        `json:"model"`
+	ApiKey      pgtype.Text        `json:"api_key"`
+	UpdatedByID pgtype.UUID        `json:"updated_by_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Attachment struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
@@ -276,6 +287,20 @@ type GithubInstallation struct {
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
+type GithubIssueSync struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	InstallationID    int64              `json:"installation_id"`
+	MulticaIssueID    pgtype.UUID        `json:"multica_issue_id"`
+	GithubRepoOwner   string             `json:"github_repo_owner"`
+	GithubRepoName    string             `json:"github_repo_name"`
+	GithubIssueNumber int32              `json:"github_issue_number"`
+	SyncDirection     string             `json:"sync_direction"`
+	LastSyncedAt      pgtype.Timestamptz `json:"last_synced_at"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
 type GithubPullRequest struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
@@ -310,6 +335,16 @@ type GithubPullRequestCheckSuite struct {
 	Conclusion pgtype.Text        `json:"conclusion"`
 	Status     string             `json:"status"`
 	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+}
+
+type GithubRepoSync struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	InstallationID int64              `json:"installation_id"`
+	RepoOwner      string             `json:"repo_owner"`
+	RepoName       string             `json:"repo_name"`
+	SyncDirection  string             `json:"sync_direction"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
 }
 
 type InboxItem struct {
@@ -402,6 +437,34 @@ type IssueSubscriber struct {
 type IssueToLabel struct {
 	IssueID pgtype.UUID `json:"issue_id"`
 	LabelID pgtype.UUID `json:"label_id"`
+}
+
+type LogErrorPattern struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	LogSourceID     pgtype.UUID        `json:"log_source_id"`
+	Fingerprint     string             `json:"fingerprint"`
+	Title           string             `json:"title"`
+	Sample          string             `json:"sample"`
+	OccurrenceCount int32              `json:"occurrence_count"`
+	FirstSeenAt     pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `json:"last_seen_at"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+}
+
+type LogSource struct {
+	ID                  pgtype.UUID        `json:"id"`
+	WorkspaceID         pgtype.UUID        `json:"workspace_id"`
+	Name                string             `json:"name"`
+	Provider            string             `json:"provider"`
+	Config              []byte             `json:"config"`
+	Enabled             bool               `json:"enabled"`
+	PollIntervalMinutes int32              `json:"poll_interval_minutes"`
+	AutoCreateIssues    bool               `json:"auto_create_issues"`
+	LastPolledAt        pgtype.Timestamptz `json:"last_polled_at"`
+	CreatedByID         pgtype.UUID        `json:"created_by_id"`
+	CreatedAt           pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Member struct {
@@ -513,6 +576,27 @@ type SquadMember struct {
 	CreatedAt  pgtype.Timestamptz `json:"created_at"`
 }
 
+type SlackIntegration struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	TeamID             string             `json:"team_id"`
+	TeamName           string             `json:"team_name"`
+	BotUserID          string             `json:"bot_user_id"`
+	BotToken           string             `json:"bot_token"`
+	DefaultChannelID   pgtype.Text        `json:"default_channel_id"`
+	DefaultChannelName pgtype.Text        `json:"default_channel_name"`
+	InstalledByID      pgtype.UUID        `json:"installed_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+}
+
+type SlackUserLink struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	UserID      pgtype.UUID        `json:"user_id"`
+	SlackUserID string             `json:"slack_user_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type TaskMessage struct {
 	ID        pgtype.UUID        `json:"id"`
 	TaskID    pgtype.UUID        `json:"task_id"`
@@ -573,6 +657,24 @@ type TaskUsageHourlyRollupState struct {
 	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
 	LastRunRows       int64              `json:"last_run_rows"`
 	LastError         pgtype.Text        `json:"last_error"`
+}
+
+type TelegramIntegration struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	BotToken      string             `json:"bot_token"`
+	BotUsername   string             `json:"bot_username"`
+	InstalledByID pgtype.UUID        `json:"installed_by_id"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
+type TelegramUserLink struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	UserID           pgtype.UUID        `json:"user_id"`
+	TelegramChatID   int64              `json:"telegram_chat_id"`
+	TelegramUsername pgtype.Text        `json:"telegram_username"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 }
 
 type User struct {
@@ -653,78 +755,4 @@ type WorkspaceInvitation struct {
 	CreatedAt     pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 	ExpiresAt     pgtype.Timestamptz `json:"expires_at"`
-}
-
-type SlackIntegration struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	TeamID             string             `json:"team_id"`
-	TeamName           string             `json:"team_name"`
-	BotUserID          string             `json:"bot_user_id"`
-	BotToken           string             `json:"bot_token"`
-	DefaultChannelID   pgtype.Text        `json:"default_channel_id"`
-	DefaultChannelName pgtype.Text        `json:"default_channel_name"`
-	InstalledByID      pgtype.UUID        `json:"installed_by_id"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-}
-
-type SlackUserLink struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	UserID      pgtype.UUID        `json:"user_id"`
-	SlackUserID string             `json:"slack_user_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-}
-
-type TelegramIntegration struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	BotToken      string             `json:"bot_token"`
-	BotUsername   string             `json:"bot_username"`
-	InstalledByID pgtype.UUID        `json:"installed_by_id"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
-}
-
-type TelegramUserLink struct {
-	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
-	UserID           pgtype.UUID        `json:"user_id"`
-	TelegramChatID   int64              `json:"telegram_chat_id"`
-	TelegramUsername pgtype.Text        `json:"telegram_username"`
-	CreatedAt        pgtype.Timestamptz `json:"created_at"`
-}
-
-type GithubIssueSync struct {
-	ID                pgtype.UUID        `json:"id"`
-	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
-	InstallationID    int64              `json:"installation_id"`
-	MulticaIssueID    pgtype.UUID        `json:"multica_issue_id"`
-	GithubRepoOwner   string             `json:"github_repo_owner"`
-	GithubRepoName    string             `json:"github_repo_name"`
-	GithubIssueNumber int32              `json:"github_issue_number"`
-	SyncDirection     string             `json:"sync_direction"`
-	LastSyncedAt      pgtype.Timestamptz `json:"last_synced_at"`
-	CreatedAt         pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
-}
-
-type GithubRepoSync struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	InstallationID int64              `json:"installation_id"`
-	RepoOwner      string             `json:"repo_owner"`
-	RepoName       string             `json:"repo_name"`
-	SyncDirection  string             `json:"sync_direction"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-}
-
-type AIProviderConfig struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Provider    string             `json:"provider"`
-	Model       pgtype.Text        `json:"model"`
-	ApiKey      pgtype.Text        `json:"api_key"`
-	UpdatedByID pgtype.UUID        `json:"updated_by_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }

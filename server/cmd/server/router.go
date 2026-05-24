@@ -403,6 +403,24 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/ai-provider", h.UpsertAIProviderConfig)
 					r.Delete("/ai-provider", h.DeleteAIProviderConfig)
 				})
+
+				// Log source management — admin-only.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Get("/log-sources", h.ListLogSources)
+					r.Post("/log-sources", h.CreateLogSource)
+					r.Patch("/log-sources/{logSourceId}", h.UpdateLogSource)
+					r.Delete("/log-sources/{logSourceId}", h.DeleteLogSource)
+					r.Post("/log-sources/{logSourceId}/poll", h.TriggerLogSourcePoll)
+				})
+
+				// Log error patterns — any workspace member.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/log-error-patterns", h.ListLogErrorPatterns)
+					r.Post("/log-error-patterns/{patternId}/create-issue", h.CreateIssueFromPattern)
+					r.Delete("/log-error-patterns/{patternId}", h.DeleteLogErrorPattern)
+				})
 			})
 		})
 

@@ -324,6 +324,7 @@ func main() {
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	go runDBStatsLogger(sweepCtx, pool)
 	go startTelegramPolling(sweepCtx, queries, telegramHandler)
+	go startLogSourcePoller(sweepCtx, queries, telegramHandler)
 
 	if metricsServer != nil {
 		go func() {

@@ -73,65 +73,6 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (C
 	return i, err
 }
 
-const getLatestAgentComment = `-- name: GetLatestAgentComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
-WHERE issue_id = $1
-  AND author_type = 'agent'
-ORDER BY created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) GetLatestAgentComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
-	row := q.db.QueryRow(ctx, getLatestAgentComment, issueID)
-	var i Comment
-	err := row.Scan(
-		&i.ID,
-		&i.IssueID,
-		&i.AuthorType,
-		&i.AuthorID,
-		&i.Content,
-		&i.Type,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ParentID,
-		&i.WorkspaceID,
-		&i.ResolvedAt,
-		&i.ResolvedByType,
-		&i.ResolvedByID,
-	)
-	return i, err
-}
-
-const getLatestAgentRootComment = `-- name: GetLatestAgentRootComment :one
-SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
-WHERE issue_id = $1
-  AND author_type = 'agent'
-  AND parent_id IS NULL
-ORDER BY created_at DESC
-LIMIT 1
-`
-
-func (q *Queries) GetLatestAgentRootComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
-	row := q.db.QueryRow(ctx, getLatestAgentRootComment, issueID)
-	var i Comment
-	err := row.Scan(
-		&i.ID,
-		&i.IssueID,
-		&i.AuthorType,
-		&i.AuthorID,
-		&i.Content,
-		&i.Type,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.ParentID,
-		&i.WorkspaceID,
-		&i.ResolvedAt,
-		&i.ResolvedByType,
-		&i.ResolvedByID,
-	)
-	return i, err
-}
-
 const deleteComment = `-- name: DeleteComment :exec
 DELETE FROM comment WHERE id = $1 AND workspace_id = $2
 `
@@ -185,6 +126,70 @@ type GetCommentInWorkspaceParams struct {
 
 func (q *Queries) GetCommentInWorkspace(ctx context.Context, arg GetCommentInWorkspaceParams) (Comment, error) {
 	row := q.db.QueryRow(ctx, getCommentInWorkspace, arg.ID, arg.WorkspaceID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+	)
+	return i, err
+}
+
+const getLatestAgentComment = `-- name: GetLatestAgentComment :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
+WHERE issue_id = $1
+  AND author_type = 'agent'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+// Returns the most recent agent comment on an issue at any thread depth.
+// Used to display the agent's last output in external channel notifications.
+func (q *Queries) GetLatestAgentComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
+	row := q.db.QueryRow(ctx, getLatestAgentComment, issueID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+	)
+	return i, err
+}
+
+const getLatestAgentRootComment = `-- name: GetLatestAgentRootComment :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
+WHERE issue_id = $1
+  AND author_type = 'agent'
+  AND parent_id IS NULL
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+// Returns the most recent root-level (no parent) agent comment on an issue.
+// Used to thread member replies from external channels (Telegram, Slack) under
+// the agent's output comment rather than posting a separate top-level comment.
+func (q *Queries) GetLatestAgentRootComment(ctx context.Context, issueID pgtype.UUID) (Comment, error) {
+	row := q.db.QueryRow(ctx, getLatestAgentRootComment, issueID)
 	var i Comment
 	err := row.Scan(
 		&i.ID,
