@@ -2,12 +2,18 @@ package nlbot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// ErrNoAPIKey is returned by Process when no AI provider API key is configured
+// for the workspace (neither in the DB nor via environment variables). Callers
+// can detect this and fall back to the daemon runtime path.
+var ErrNoAPIKey = errors.New("no AI provider API key configured")
 
 // TaskEnqueuer is satisfied by *service.TaskService. Defined here so nlbot
 // stays independent of the service package.
@@ -38,7 +44,7 @@ type toolExecutorFn func(name string, args map[string]any) (string, error)
 func Process(ctx context.Context, queries *db.Queries, enqueuer TaskEnqueuer, wsID, userID pgtype.UUID, message string) (string, error) {
 	provider, model, apiKey := loadConfig(ctx, queries, wsID)
 	if apiKey == "" {
-		return "", fmt.Errorf("no API key configured for AI provider %q — set it in Settings → Integrations → AI Provider or configure the server environment", provider)
+		return "", fmt.Errorf("%w for provider %q — set it in Settings → Integrations → AI Provider or configure the server environment", ErrNoAPIKey, provider)
 	}
 
 	tools := buildToolDefs()

@@ -64,6 +64,7 @@ type Task struct {
 	AutopilotSource         string                `json:"autopilot_source,omitempty"`          // manual, schedule, webhook, or api
 	AutopilotTriggerPayload json.RawMessage       `json:"autopilot_trigger_payload,omitempty"` // optional trigger payload for webhook/api runs
 	QuickCreatePrompt       string                `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
+	ChannelNLMessage        string                `json:"channel_nl_message,omitempty"`        // user message for channel NL-query tasks (Slack/Telegram runtime fallback)
 	SquadID                 string                `json:"squad_id,omitempty"`                  // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName               string                `json:"squad_name,omitempty"`                // display name for the picker squad, used in prompt text
 	// RequestingUserName + RequestingUserProfileDescription describe the human

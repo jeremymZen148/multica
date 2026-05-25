@@ -15,6 +15,9 @@ import (
 // lightweight inline template (or Windows file for any provider on
 // Windows).
 func BuildPrompt(task Task, provider string) string {
+	if task.ChannelNLMessage != "" {
+		return buildChannelNLPrompt(task)
+	}
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}
@@ -32,6 +35,18 @@ func BuildPrompt(task Task, provider string) string {
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). `multica issue comment list %s --output json` returns all comments for the issue (server caps at 2000). On long-running issues use `--recent 20 --output json` to read the 20 most recently active threads, then page older threads via the stderr `Next thread cursor: ...` line and the matching `--before` / `--before-id` until you have enough history. `--since <RFC3339>` is still available for incremental polling and may combine with `--recent`.\n", task.IssueID)
+	return b.String()
+}
+
+// buildChannelNLPrompt constructs the prompt for a channel NL-query task.
+// The user sent a natural-language workspace-management message via Slack or
+// Telegram and no cloud AI provider key is configured. The agent runs in
+// single-turn conversational mode and its final stdout is the channel reply.
+func buildChannelNLPrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are a Multica workspace assistant responding to a message from a messaging channel (Slack or Telegram).\n\n")
+	b.WriteString("Use the `multica` CLI to fulfill the request. When listing issues, be concise — show title, status, priority, and ID. Print only the reply text as your final output — it will be sent directly to the user in the channel.\n\n")
+	fmt.Fprintf(&b, "User message:\n%s\n", task.ChannelNLMessage)
 	return b.String()
 }
 

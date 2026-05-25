@@ -1481,6 +1481,24 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Channel NL-query task: resolve workspace and message from context JSONB.
+	// Uses the same no-issue-link pattern as quick-create so the daemon can
+	// skip the issue/chat/autopilot hydration above.
+	if !hasQuickCreate && task.Context != nil && !task.IssueID.Valid && !task.ChatSessionID.Valid && !task.AutopilotRunID.Valid {
+		var cnl service.ChannelNLQueryContext
+		if json.Unmarshal(task.Context, &cnl) == nil && cnl.Type == service.ChannelNLQueryContextType {
+			resp.ChannelNLMessage = cnl.Message
+			resp.WorkspaceID = cnl.WorkspaceID
+			// Surface workspace repos so the agent can check out code if needed.
+			if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(cnl.WorkspaceID)); err == nil && ws.Repos != nil {
+				var repos []RepoData
+				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
+					resp.Repos = repos
+				}
+			}
+		}
+	}
+
 	// Workspace isolation check: the daemon uses this response's workspace_id
 	// as the only authority for MULTICA_WORKSPACE_ID in the agent env. An
 	// empty value would make the CLI silently fall back to the user-global

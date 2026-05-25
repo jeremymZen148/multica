@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/nlbot"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -297,6 +299,7 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 	text := strings.TrimSpace(vals.Get("text"))
 	slackUserID := vals.Get("user_id")
 	teamID := vals.Get("team_id")
+	responseURL := vals.Get("response_url")
 	ctx := r.Context()
 
 	integration, err := h.Queries.GetSlackIntegrationByTeamID(ctx, teamID)
@@ -339,6 +342,21 @@ func (h *Handler) HandleSlackCommand(w http.ResponseWriter, r *http.Request) {
 		// Route everything else to the NL bot.
 		reply, err := nlbot.Process(ctx, h.Queries, h.TaskService, integration.WorkspaceID, link.UserID, text)
 		if err != nil {
+			// When no API key is configured, fall back to an online daemon runtime.
+			if errors.Is(err, nlbot.ErrNoAPIKey) && responseURL != "" {
+				_, enqErr := h.TaskService.EnqueueChannelNLTask(ctx, service.ChannelNLTaskParams{
+					WorkspaceID:      integration.WorkspaceID,
+					RequesterID:      link.UserID,
+					Message:          text,
+					Channel:          "slack",
+					SlackResponseURL: responseURL,
+				})
+				if enqErr == nil {
+					writeJSON(w, http.StatusOK, slackEphemeral("⏳ Working on it..."))
+					return
+				}
+				slog.Warn("slack NL runtime fallback failed", "workspace_id", wsID, "error", enqErr)
+			}
 			writeJSON(w, http.StatusOK, slackEphemeral("⚠️ "+err.Error()))
 			return
 		}

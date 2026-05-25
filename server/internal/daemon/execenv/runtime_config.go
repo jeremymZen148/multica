@@ -277,7 +277,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	// issue (comment-triggered or assignment-triggered). Chat / quick-create /
 	// run-only autopilot don't carry an issue id and would just generate a
 	// failed `metadata list` call on every entry.
-	hasIssueContext := ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == ""
+	hasIssueContext := ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == "" && ctx.ChannelNLMessage == ""
 	if hasIssueContext {
 		b.WriteString("## Issue Metadata\n\n")
 		b.WriteString("Each issue carries a small KV `metadata` bag — a high-signal scratchpad where agents pin the handful of facts that future runs on this same issue will look up over and over (the PR URL, the deploy URL, what we're blocked on). It is NOT a place to record every fact you discover — that's what comments and the description are for. Most runs write **zero** new keys; that's the expected case, not a failure.\n\n")
@@ -290,7 +290,20 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 	b.WriteString("### Workflow\n\n")
 
-	if ctx.ChatSessionID != "" {
+	if ctx.ChannelNLMessage != "" {
+		// Channel NL-query task: user sent a natural-language message via
+		// Slack or Telegram and no cloud AI provider key is configured.
+		// Run in conversational mode, just like chat — but this is a one-shot
+		// task: there is no persistent session and the final stdout is posted
+		// back to the channel as the reply.
+		b.WriteString("**You are handling a workspace management request from a messaging channel (Slack or Telegram).** No chat session exists — this is a single-turn request.\n\n")
+		b.WriteString("- Use the `multica` CLI to fulfill the request (look up issues, update status, assign work, create issues, add comments, etc.)\n")
+		b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")
+		b.WriteString("- If asked about workspace members or agents, use `multica member list --output json` or `multica agent list --output json`\n")
+		b.WriteString("- If asked to perform actions (create issues, update status, assign, etc.), use the appropriate CLI commands\n")
+		b.WriteString("- Keep your reply concise and natural — the user is reading it in a messaging app\n")
+		b.WriteString("- Your final stdout is the message that gets posted back to the channel\n\n")
+	} else if ctx.ChatSessionID != "" {
 		// Chat task: interactive assistant mode
 		b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
 		b.WriteString("- Respond conversationally and helpfully to the user's message\n")
@@ -448,6 +461,8 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 	b.WriteString("## Output\n\n")
 	switch {
+	case ctx.ChannelNLMessage != "":
+		b.WriteString("This is a channel NL-query task. Your final stdout is sent directly back to the user in Slack or Telegram as the reply — do NOT call `multica issue comment add`. Print only the reply text, nothing else.\n")
 	case ctx.AutopilotRunID != "":
 		b.WriteString("This is a run-only autopilot task, so there may be no issue comment to post. Your final assistant output is captured automatically as the autopilot run result. Keep it concise and state the outcome.\n")
 	case ctx.QuickCreatePrompt != "":

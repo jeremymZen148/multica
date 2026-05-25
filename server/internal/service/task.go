@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/channelreply"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/mention"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -596,6 +597,105 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	return task, nil
 }
 
+// ChannelNLQueryContextType marks a task as a channel natural-language query.
+const ChannelNLQueryContextType = "channel_nl_query"
+
+// ChannelNLQueryContext is stored in the task's context JSONB for channel
+// NL-query tasks. The daemon dispatches these like quick-create tasks (no
+// issue / chat / autopilot link), but the agent operates in conversational
+// mode and the result is posted back to the originating channel.
+type ChannelNLQueryContext struct {
+	Type        string `json:"type"`
+	Message     string `json:"message"`
+	RequesterID string `json:"requester_id"`
+	WorkspaceID string `json:"workspace_id"`
+	// Reply target — exactly one of the two variants below is set.
+	Channel             string `json:"channel"` // "slack" or "telegram"
+	SlackResponseURL    string `json:"slack_response_url,omitempty"`
+	TelegramChatID      int64  `json:"telegram_chat_id,omitempty"`
+	TelegramBotToken    string `json:"telegram_bot_token,omitempty"`
+}
+
+// ChannelNLTaskParams carries the inputs for EnqueueChannelNLTask.
+type ChannelNLTaskParams struct {
+	WorkspaceID      pgtype.UUID
+	RequesterID      pgtype.UUID
+	Message          string
+	Channel          string // "slack" or "telegram"
+	SlackResponseURL string
+	TelegramChatID   int64
+	TelegramBotToken string
+}
+
+// EnqueueChannelNLTask queues a natural-language workspace-management task
+// originating from Slack or Telegram when no cloud AI provider key is
+// configured. It picks the first agent bound to an online runtime in the
+// workspace and enqueues the message as a channel_nl_query task. The daemon
+// runs the agent in conversational mode and the reply is posted back to the
+// channel when the task completes.
+func (s *TaskService) EnqueueChannelNLTask(ctx context.Context, p ChannelNLTaskParams) (db.AgentTaskQueue, error) {
+	agent, err := s.findOnlineAgentForWorkspace(ctx, p.WorkspaceID)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("no online agent available for channel NL task: %w", err)
+	}
+
+	payload := ChannelNLQueryContext{
+		Type:             ChannelNLQueryContextType,
+		Message:          p.Message,
+		RequesterID:      util.UUIDToString(p.RequesterID),
+		WorkspaceID:      util.UUIDToString(p.WorkspaceID),
+		Channel:          p.Channel,
+		SlackResponseURL: p.SlackResponseURL,
+		TelegramChatID:   p.TelegramChatID,
+		TelegramBotToken: p.TelegramBotToken,
+	}
+	contextJSON, err := json.Marshal(payload)
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("marshal channel NL context: %w", err)
+	}
+
+	task, err := s.Queries.CreateQuickCreateTask(ctx, db.CreateQuickCreateTaskParams{
+		AgentID:   agent.ID,
+		RuntimeID: agent.RuntimeID,
+		Priority:  priorityToInt("high"),
+		Context:   contextJSON,
+	})
+	if err != nil {
+		return db.AgentTaskQueue{}, fmt.Errorf("create channel NL task: %w", err)
+	}
+
+	slog.Info("channel NL task enqueued",
+		"task_id", util.UUIDToString(task.ID),
+		"agent_id", util.UUIDToString(agent.ID),
+		"channel", p.Channel,
+		"workspace_id", util.UUIDToString(p.WorkspaceID),
+	)
+	s.NotifyTaskEnqueued(ctx, task)
+	return task, nil
+}
+
+// findOnlineAgentForWorkspace returns the first non-archived agent in the
+// workspace whose runtime is currently online.
+func (s *TaskService) findOnlineAgentForWorkspace(ctx context.Context, wsID pgtype.UUID) (db.Agent, error) {
+	agents, err := s.Queries.ListAgents(ctx, wsID)
+	if err != nil {
+		return db.Agent{}, err
+	}
+	for _, a := range agents {
+		if !a.RuntimeID.Valid {
+			continue
+		}
+		rt, err := s.Queries.GetAgentRuntime(ctx, a.RuntimeID)
+		if err != nil {
+			continue
+		}
+		if rt.Status == "online" {
+			return a, nil
+		}
+	}
+	return db.Agent{}, fmt.Errorf("no agent with an online runtime found in workspace")
+}
+
 // EnqueueChatTask creates a queued task for a chat session.
 // Unlike issue tasks, chat tasks have no issue_id.
 func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSession) (db.AgentTaskQueue, error) {
@@ -1090,6 +1190,11 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// parsing the agent's stdout for an identifier.
 	if qc, ok := s.parseQuickCreateContext(task); ok {
 		s.notifyQuickCreateCompleted(ctx, task, qc)
+	}
+
+	// Channel NL-query tasks: post the agent's reply back to Slack/Telegram.
+	if cnl, ok := s.parseChannelNLContext(task); ok {
+		s.notifyChannelNLCompleted(ctx, task, cnl, result)
 	}
 
 	// For chat tasks, save assistant reply and broadcast chat:done. The
@@ -2197,6 +2302,61 @@ func (s *TaskService) publishQuickCreateInbox(item db.InboxItem, workspaceID, ag
 		ActorID:     agentID,
 		Payload:     map[string]any{"item": resp},
 	})
+}
+
+// parseChannelNLContext returns the channel NL-query payload when the task's
+// context JSONB carries type == "channel_nl_query". Tasks linked to an issue /
+// chat / autopilot run are never channel NL tasks.
+func (s *TaskService) parseChannelNLContext(task db.AgentTaskQueue) (ChannelNLQueryContext, bool) {
+	if task.IssueID.Valid || task.ChatSessionID.Valid || task.AutopilotRunID.Valid {
+		return ChannelNLQueryContext{}, false
+	}
+	if len(task.Context) == 0 {
+		return ChannelNLQueryContext{}, false
+	}
+	var cnl ChannelNLQueryContext
+	if err := json.Unmarshal(task.Context, &cnl); err != nil {
+		return ChannelNLQueryContext{}, false
+	}
+	if cnl.Type != ChannelNLQueryContextType {
+		return ChannelNLQueryContext{}, false
+	}
+	return cnl, true
+}
+
+// notifyChannelNLCompleted extracts the agent's text output from the task
+// result and posts it back to the originating Slack or Telegram channel.
+func (s *TaskService) notifyChannelNLCompleted(ctx context.Context, task db.AgentTaskQueue, cnl ChannelNLQueryContext, result []byte) {
+	var payload protocol.TaskCompletedPayload
+	if err := json.Unmarshal(result, &payload); err != nil || payload.Output == "" {
+		slog.Warn("channel NL task completed with no output",
+			"task_id", util.UUIDToString(task.ID),
+			"channel", cnl.Channel,
+		)
+		return
+	}
+	reply := util.UnescapeBackslashEscapes(payload.Output)
+
+	switch cnl.Channel {
+	case "slack":
+		if cnl.SlackResponseURL == "" {
+			slog.Warn("channel NL slack task: missing response_url", "task_id", util.UUIDToString(task.ID))
+			return
+		}
+		if err := channelreply.PostSlackResponseURL(ctx, cnl.SlackResponseURL, reply); err != nil {
+			slog.Warn("channel NL slack reply failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+	case "telegram":
+		if cnl.TelegramBotToken == "" || cnl.TelegramChatID == 0 {
+			slog.Warn("channel NL telegram task: missing bot token or chat id", "task_id", util.UUIDToString(task.ID))
+			return
+		}
+		if err := channelreply.PostTelegramMessage(ctx, cnl.TelegramBotToken, cnl.TelegramChatID, reply); err != nil {
+			slog.Warn("channel NL telegram reply failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+	default:
+		slog.Warn("channel NL task: unknown channel", "task_id", util.UUIDToString(task.ID), "channel", cnl.Channel)
+	}
 }
 
 // agentToMap builds a simple map for broadcasting agent status updates.

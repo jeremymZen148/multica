@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/nlbot"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -307,7 +309,11 @@ func (h *Handler) ProcessTelegramUpdate(ctx context.Context, wsID string, wsUUID
 		// Free-text message — route to NL bot.
 		nlReply, err := nlbot.Process(ctx, h.Queries, h.TaskService, wsUUID, link.UserID, text)
 		if err != nil {
-			reply = "⚠️ " + err.Error()
+			if errors.Is(err, nlbot.ErrNoAPIKey) {
+				reply = h.tryTelegramRuntimeFallback(ctx, integration, wsUUID, link.UserID, chatID, text)
+			} else {
+				reply = "⚠️ " + err.Error()
+			}
 		} else {
 			reply = nlReply
 		}
@@ -337,7 +343,11 @@ func (h *Handler) ProcessTelegramUpdate(ctx context.Context, wsID string, wsUUID
 			// Unknown slash command — also route to NL bot.
 			nlReply, err := nlbot.Process(ctx, h.Queries, h.TaskService, wsUUID, link.UserID, text)
 			if err != nil {
-				reply = fmt.Sprintf("Unknown command /%s. Try /help.", cmd)
+				if errors.Is(err, nlbot.ErrNoAPIKey) {
+					reply = h.tryTelegramRuntimeFallback(ctx, integration, wsUUID, link.UserID, chatID, text)
+				} else {
+					reply = fmt.Sprintf("Unknown command /%s. Try /help.", cmd)
+				}
 			} else {
 				reply = nlReply
 			}
@@ -599,6 +609,28 @@ func extractIssueIDFromText(text string) string {
 }
 
 // ── Telegram Bot API helpers ──────────────────────────────────────────────────
+
+// tryTelegramRuntimeFallback enqueues a channel NL-query task to an online
+// daemon runtime and returns an immediate acknowledgment message. If no runtime
+// is available it returns the original "no API key" error text.
+func (h *Handler) tryTelegramRuntimeFallback(ctx context.Context, integration db.TelegramIntegration, wsUUID pgtype.UUID, userID pgtype.UUID, chatID int64, text string) string {
+	_, err := h.TaskService.EnqueueChannelNLTask(ctx, service.ChannelNLTaskParams{
+		WorkspaceID:      wsUUID,
+		RequesterID:      userID,
+		Message:          text,
+		Channel:          "telegram",
+		TelegramChatID:   chatID,
+		TelegramBotToken: integration.BotToken,
+	})
+	if err != nil {
+		slog.Warn("telegram NL runtime fallback failed",
+			"workspace_id", util.UUIDToString(wsUUID),
+			"error", err,
+		)
+		return "⚠️ No AI provider key configured and no online agent runtime available. Set up an API key in Settings → Integrations → AI Provider, or start a local agent daemon."
+	}
+	return "⏳ Working on it..."
+}
 
 // TelegramSendMessage sends a message to a Telegram chat with optional inline keyboard.
 func TelegramSendMessage(ctx context.Context, botToken string, chatID int64, text string, keyboard *telegramInlineKeyboard) error {

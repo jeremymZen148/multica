@@ -2186,6 +2186,11 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 		// state via the task gc-check endpoint.
 		meta.Kind = execenv.GCKindQuickCreate
 		meta.TaskID = task.ID
+	case task.ChannelNLMessage != "":
+		// Channel NL-query tasks follow the same GC pattern as quick-create:
+		// no issue is created, so track by task ID.
+		meta.Kind = execenv.GCKindQuickCreate
+		meta.TaskID = task.ID
 	default:
 		return execenv.GCMeta{}, false
 	}
@@ -2257,6 +2262,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AutopilotSource:                  task.AutopilotSource,
 		AutopilotTriggerPayload:          strings.TrimSpace(string(task.AutopilotTriggerPayload)),
 		QuickCreatePrompt:                task.QuickCreatePrompt,
+		ChannelNLMessage:                 task.ChannelNLMessage,
 		IsSquadLeader:                    strings.Contains(instructions, "## Squad Operating Protocol"),
 		RequestingUserName:               task.RequestingUserName,
 		RequestingUserProfileDescription: task.RequestingUserProfileDescription,
