@@ -5,6 +5,7 @@ import { electronApp, optimizer, is } from "@electron-toolkit/utils";
 import fixPath from "fix-path";
 import { setupAutoUpdater } from "./updater";
 import { setupDaemonManager } from "./daemon-manager";
+import { setupTerminal, killAllTerminalSessions } from "./terminal-ipc";
 import { openExternalSafely, downloadURLSafely } from "./external-url";
 import { installContextMenu } from "./context-menu";
 import { getAppVersion } from "./app-version";
@@ -383,6 +384,7 @@ if (!gotTheLock) {
 
     setupAutoUpdater(() => mainWindow);
     setupDaemonManager(() => mainWindow);
+    setupTerminal(() => mainWindow);
 
     // macOS: deep link arrives via open-url event
     app.on("open-url", (_event, url) => {
@@ -408,5 +410,6 @@ if (!gotTheLock) {
 }
 
 app.on("window-all-closed", () => {
+  killAllTerminalSessions();
   if (process.platform !== "darwin") app.quit();
 });

@@ -196,6 +196,31 @@ const daemonAPI = {
     ipcRenderer.invoke("daemon:open-log-file"),
 };
 
+const terminalAPI = {
+  create: (sessionId: string, cwd: string, cols: number, rows: number): Promise<void> =>
+    ipcRenderer.invoke("terminal:create", sessionId, cwd, cols, rows),
+  write: (sessionId: string, data: string): void =>
+    ipcRenderer.send("terminal:write", sessionId, data),
+  resize: (sessionId: string, cols: number, rows: number): Promise<void> =>
+    ipcRenderer.invoke("terminal:resize", sessionId, cols, rows),
+  kill: (sessionId: string): Promise<void> =>
+    ipcRenderer.invoke("terminal:kill", sessionId),
+  onData: (callback: (payload: { sessionId: string; data: string }) => void) => {
+    const handler = (_: unknown, payload: { sessionId: string; data: string }) => callback(payload);
+    ipcRenderer.on("terminal:data", handler);
+    return () => ipcRenderer.removeListener("terminal:data", handler);
+  },
+  onExit: (callback: (payload: { sessionId: string; exitCode: number }) => void) => {
+    const handler = (_: unknown, payload: { sessionId: string; exitCode: number }) => callback(payload);
+    ipcRenderer.on("terminal:exit", handler);
+    return () => ipcRenderer.removeListener("terminal:exit", handler);
+  },
+  getRepoPath: (wsId: string): Promise<string | null> =>
+    ipcRenderer.invoke("terminal:get-repo-path", wsId),
+  setRepoPath: (wsId: string, repoPath: string): Promise<void> =>
+    ipcRenderer.invoke("terminal:set-repo-path", wsId, repoPath),
+};
+
 const updaterAPI = {
   onUpdateAvailable: (callback: (info: { version: string; releaseNotes?: string }) => void) => {
     const handler = (_: unknown, info: { version: string; releaseNotes?: string }) => callback(info);
@@ -225,6 +250,7 @@ if (process.contextIsolated) {
   contextBridge.exposeInMainWorld("desktopAPI", desktopAPI);
   contextBridge.exposeInMainWorld("daemonAPI", daemonAPI);
   contextBridge.exposeInMainWorld("updater", updaterAPI);
+  contextBridge.exposeInMainWorld("terminalAPI", terminalAPI);
 } else {
   // @ts-expect-error - fallback for non-isolated context
   window.electron = electronAPI;
@@ -234,4 +260,6 @@ if (process.contextIsolated) {
   window.daemonAPI = daemonAPI;
   // @ts-expect-error - fallback for non-isolated context
   window.updater = updaterAPI;
+  // @ts-expect-error - fallback for non-isolated context
+  window.terminalAPI = terminalAPI;
 }

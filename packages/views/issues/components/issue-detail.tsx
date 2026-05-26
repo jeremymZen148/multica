@@ -17,6 +17,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Terminal,
   Users,
 } from "lucide-react";
 import { PageHeader } from "../../layout/page-header";
@@ -349,13 +350,15 @@ interface IssueDetailProps {
   layoutId?: string;
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
   highlightCommentId?: string;
+  /** Desktop-only: renders a resizable bottom panel (terminal, diff viewer, etc.). */
+  terminalPanel?: React.ReactNode;
 }
 
 // ---------------------------------------------------------------------------
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, terminalPanel }: IssueDetailProps) {
   const { t } = useT("issues");
   const id = issueId;
   const router = useNavigation();
@@ -381,6 +384,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     id: layoutId,
   });
   const sidebarRef = usePanelRef();
+  const terminalPanelRef = usePanelRef();
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const isMobile = useIsMobile();
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(defaultSidebarOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -756,6 +761,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (panel.isCollapsed()) panel.expand();
     else panel.collapse();
   }, [isMobile, sidebarRef]);
+
+  const handleToggleTerminal = useCallback(() => {
+    const panel = terminalPanelRef.current;
+    if (!panel) return;
+    if (panel.isCollapsed()) panel.expand();
+    else panel.collapse();
+  }, [terminalPanelRef]);
 
   if (loading) {
     return (
@@ -1139,6 +1151,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 </Button>
               }
             />
+            {terminalPanel && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant={terminalOpen ? "secondary" : "ghost"}
+                      size="icon-sm"
+                      className={terminalOpen ? "" : "text-muted-foreground"}
+                      onClick={handleToggleTerminal}
+                    >
+                      <Terminal />
+                    </Button>
+                  }
+                />
+                <TooltipContent side="bottom">Terminal</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1501,8 +1530,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
   }
 
-  return (
-    <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
+  const horizontalPanels = (
+    <ResizablePanelGroup orientation="horizontal" className="h-full" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
       <ResizablePanel id="content" minSize="50%">
         {detailContent}
       </ResizablePanel>
@@ -1522,6 +1551,35 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           {sidebarContent}
         </div>
       </div>
+      </ResizablePanel>
+    </ResizablePanelGroup>
+  );
+
+  if (!terminalPanel) {
+    return (
+      <div className="flex-1 min-h-0">
+        {horizontalPanels}
+      </div>
+    );
+  }
+
+  return (
+    <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
+      <ResizablePanel id="issue-body" minSize="30%">
+        {horizontalPanels}
+      </ResizablePanel>
+      <ResizableHandle />
+      <ResizablePanel
+        id="issue-terminal"
+        defaultSize={0}
+        minSize={15}
+        collapsible
+        panelRef={terminalPanelRef}
+        onResize={(size) => setTerminalOpen(size.inPixels > 0)}
+      >
+        <div className="h-full border-t">
+          {terminalPanel}
+        </div>
       </ResizablePanel>
     </ResizablePanelGroup>
   );

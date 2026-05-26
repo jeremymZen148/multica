@@ -5,6 +5,7 @@ import { ErrorBoundary } from "@multica/ui/components/common/error-boundary";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { useDocumentTitle } from "@/hooks/use-document-title";
+import { IssueTerminalPanel } from "@/components/issue-terminal-panel";
 
 export function IssueDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -16,7 +17,18 @@ export function IssueDetailPage() {
   if (!id) return null;
   return (
     <ErrorBoundary resetKeys={[id]}>
-      <IssueDetail issueId={id} />
+      <IssueDetail
+        issueId={id}
+        terminalPanel={
+          issue ? (
+            <IssueTerminalPanel
+              issueId={issue.id}
+              identifier={issue.identifier}
+              wsId={wsId}
+            />
+          ) : undefined
+        }
+      />
     </ErrorBoundary>
   );
 }
