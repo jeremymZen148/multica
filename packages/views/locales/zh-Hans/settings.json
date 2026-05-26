@@ -307,6 +307,7 @@
     "connection_identifier_example": "MUL-123",
     "connected_to": "已连接到 {{login}}",
     "connect_github": "连接 GitHub",
+    "connect_opening": "正在打开…",
     "connect_disabled_tooltip": "服务端未配置 GitHub App",
     "disconnect": "断开",
     "disconnecting": "断开中…",

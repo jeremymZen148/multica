@@ -307,6 +307,7 @@
     "connection_identifier_example": "MUL-123",
     "connected_to": "Connected to {{login}}",
     "connect_github": "Connect GitHub",
+    "connect_opening": "Opening…",
     "connect_disabled_tooltip": "GitHub App is not configured on this server",
     "disconnect": "Disconnect",
     "disconnecting": "Disconnecting…",
