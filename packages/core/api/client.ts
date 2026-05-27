@@ -1415,14 +1415,14 @@ export class ApiClient {
     await this.fetch(`/api/workspaces/${workspaceId}/slack`, { method: "DELETE" });
   }
 
-  async linkSlackUser(workspaceId: string, slackUserId: string): Promise<SlackUserLink> {
+  async linkSlackUser(_workspaceId: string, slackUserId: string): Promise<SlackUserLink> {
     return this.fetch(`/api/integrations/slack/link`, {
       method: "POST",
       body: JSON.stringify({ slack_user_id: slackUserId }),
     });
   }
 
-  async unlinkSlackUser(workspaceId: string): Promise<void> {
+  async unlinkSlackUser(_workspaceId: string): Promise<void> {
     await this.fetch(`/api/integrations/slack/link`, { method: "DELETE" });
   }
 
@@ -1443,7 +1443,7 @@ export class ApiClient {
   }
 
   async linkTelegramUser(
-    workspaceId: string,
+    _workspaceId: string,
     telegramChatId: number,
     telegramUsername?: string,
   ): Promise<TelegramUserLink> {
@@ -1453,7 +1453,7 @@ export class ApiClient {
     });
   }
 
-  async unlinkTelegramUser(workspaceId: string): Promise<void> {
+  async unlinkTelegramUser(_workspaceId: string): Promise<void> {
     await this.fetch(`/api/integrations/telegram/link`, { method: "DELETE" });
   }
 
@@ -1477,6 +1477,7 @@ export class ApiClient {
   async deleteAIProviderConfig(workspaceId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/ai-provider`, { method: "DELETE" });
   }
+
 
   // GitHub Repo Sync
   async listGitHubRepoSyncs(workspaceId: string): Promise<GitHubRepoSync[]> {

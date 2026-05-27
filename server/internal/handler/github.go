@@ -22,16 +22,26 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ── Response shapes ─────────────────────────────────────────────────────────
 
+// GitHubInstallationResponse is the JSON shape returned by the installation
+// list endpoint and broadcast on installation-related WS events.
+//
+// InstallationID is admin-only: the numeric GitHub installation_id is the
+// management handle used by the Connect/Disconnect flows, so non-admin
+// members receive responses with the field omitted. The list handler gates
+// it by role; realtime broadcasts always omit it because the WS fanout has
+// no per-recipient view (admins re-query the list endpoint on invalidation
+// to recover the management handle).
 type GitHubInstallationResponse struct {
 	ID               string  `json:"id"`
 	WorkspaceID      string  `json:"workspace_id"`
-	InstallationID   int64   `json:"installation_id"`
+	InstallationID   *int64  `json:"installation_id,omitempty"`
 	AccountLogin     string  `json:"account_login"`
 	AccountType      string  `json:"account_type"`
 	AccountAvatarURL *string `json:"account_avatar_url"`
@@ -62,10 +72,11 @@ type GitHubConnectResponse struct {
 }
 
 func githubInstallationToResponse(i db.GithubInstallation) GitHubInstallationResponse {
+	instID := i.InstallationID
 	return GitHubInstallationResponse{
 		ID:               uuidToString(i.ID),
 		WorkspaceID:      uuidToString(i.WorkspaceID),
-		InstallationID:   i.InstallationID,
+		InstallationID:   &instID,
 		AccountLogin:     i.AccountLogin,
 		AccountType:      i.AccountType,
 		AccountAvatarURL: textToPtr(i.AccountAvatarUrl),
@@ -181,7 +192,10 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 // sends after a user installs (or re-authorizes) the App. We expect
 // ?installation_id=<id>&state=<signed token>. We persist the installation
 // row (workspace ↔ installation_id mapping), then bounce the user back to
-// the Settings → Integrations page in the web app.
+// the new Settings → GitHub tab in the web app (MUL-2414 §4.1). The
+// previous destination was the catch-all Settings page, which after the
+// GitHub-tab split would land users on the default profile tab instead of
+// the place that shows the connection they just completed.
 func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	installationIDStr := q.Get("installation_id")
@@ -190,25 +204,25 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 	if frontend == "" {
 		frontend = "http://localhost:3000"
 	}
-	settingsURL := strings.TrimRight(frontend, "/") + "/settings"
+	settingsURL := strings.TrimRight(frontend, "/") + "/settings?tab=github"
 
 	if installationIDStr == "" || state == "" {
-		http.Redirect(w, r, settingsURL+"?github_error=missing_params", http.StatusFound)
+		http.Redirect(w, r, settingsURL+"&github_error=missing_params", http.StatusFound)
 		return
 	}
 	workspaceID, ok := verifyState(state)
 	if !ok {
-		http.Redirect(w, r, settingsURL+"?github_error=invalid_state", http.StatusFound)
+		http.Redirect(w, r, settingsURL+"&github_error=invalid_state", http.StatusFound)
 		return
 	}
 	installationID, err := strconv.ParseInt(installationIDStr, 10, 64)
 	if err != nil {
-		http.Redirect(w, r, settingsURL+"?github_error=bad_installation_id", http.StatusFound)
+		http.Redirect(w, r, settingsURL+"&github_error=bad_installation_id", http.StatusFound)
 		return
 	}
 	wsUUID, err := parseStrictUUID(workspaceID)
 	if err != nil {
-		http.Redirect(w, r, settingsURL+"?github_error=bad_workspace", http.StatusFound)
+		http.Redirect(w, r, settingsURL+"&github_error=bad_workspace", http.StatusFound)
 		return
 	}
 	// Resolve the installation against GitHub's API to capture display info.
@@ -237,13 +251,13 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		slog.Error("github: failed to persist installation", "err", err, "installation_id", installationID)
-		http.Redirect(w, r, settingsURL+"?github_error=persist_failed", http.StatusFound)
+		http.Redirect(w, r, settingsURL+"&github_error=persist_failed", http.StatusFound)
 		return
 	}
 	h.publish(protocol.EventGitHubInstallationCreated, workspaceID, "system", "", map[string]any{
 		"installation": githubInstallationToResponse(inst),
 	})
-	http.Redirect(w, r, settingsURL+"?github_connected=1", http.StatusFound)
+	http.Redirect(w, r, settingsURL+"&github_connected=1", http.StatusFound)
 }
 
 // fetchInstallationAccount tries to enrich the installation row with the
@@ -294,12 +308,21 @@ func fetchInstallationAccount(ctx context.Context, installationID int64) (login,
 
 // ── Listing / disconnect ────────────────────────────────────────────────────
 
+// ListGitHubInstallations returns the workspace's connected GitHub
+// installations to any workspace member. Connect/disconnect remain
+// admin-only at the router level, so the response carries a `can_manage`
+// hint and strips the numeric `installation_id` for non-admin callers —
+// they get visibility into "is GitHub wired up, and by whom?" without the
+// management handle.
 func (h *Handler) ListGitHubInstallations(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
 		return
 	}
+	member, _ := middleware.MemberFromContext(r.Context())
+	canManage := roleAllowed(member.Role, "owner", "admin")
+
 	rows, err := h.Queries.ListGitHubInstallationsByWorkspace(r.Context(), wsUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list installations")
@@ -307,9 +330,17 @@ func (h *Handler) ListGitHubInstallations(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]GitHubInstallationResponse, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, githubInstallationToResponse(row))
+		resp := githubInstallationToResponse(row)
+		if !canManage {
+			resp.InstallationID = nil
+		}
+		out = append(out, resp)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"installations": out, "configured": isGitHubConfigured()})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"installations": out,
+		"configured":    isGitHubConfigured(),
+		"can_manage":    canManage,
+	})
 }
 
 func (h *Handler) DeleteGitHubInstallation(w http.ResponseWriter, r *http.Request) {
@@ -1060,4 +1091,122 @@ func strPtrOrNil(s string) *string {
 	}
 	v := s
 	return &v
+}
+
+// ── GitHub Repo Sync ────────────────────────────────────────────────────────
+
+type GitHubRepoSyncResponse struct {
+	ID             string `json:"id"`
+	WorkspaceID    string `json:"workspace_id"`
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	SyncDirection  string `json:"sync_direction"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type githubRepoSyncRequest struct {
+	InstallationID int64  `json:"installation_id"`
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	SyncDirection  string `json:"sync_direction"`
+}
+
+func githubRepoSyncToResponse(s db.GithubRepoSync) GitHubRepoSyncResponse {
+	return GitHubRepoSyncResponse{
+		ID:             uuidToString(s.ID),
+		WorkspaceID:    uuidToString(s.WorkspaceID),
+		InstallationID: s.InstallationID,
+		RepoOwner:      s.RepoOwner,
+		RepoName:       s.RepoName,
+		SyncDirection:  s.SyncDirection,
+		CreatedAt:      timestampToString(s.CreatedAt),
+	}
+}
+
+// ListGitHubRepoSyncs returns all repo sync configurations for a workspace.
+func (h *Handler) ListGitHubRepoSyncs(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	syncs, err := h.Queries.ListGitHubRepoSyncs(r.Context(), wsUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list repo syncs")
+		return
+	}
+
+	out := make([]GitHubRepoSyncResponse, len(syncs))
+	for i, s := range syncs {
+		out[i] = githubRepoSyncToResponse(s)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// UpsertGitHubRepoSync creates or updates a repo sync configuration.
+func (h *Handler) UpsertGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	var req githubRepoSyncRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.RepoOwner == "" || req.RepoName == "" {
+		writeError(w, http.StatusBadRequest, "repo_owner and repo_name are required")
+		return
+	}
+	switch req.SyncDirection {
+	case "multica_to_github", "github_to_multica", "both":
+	case "":
+		req.SyncDirection = "both"
+	default:
+		writeError(w, http.StatusBadRequest, "sync_direction must be multica_to_github, github_to_multica, or both")
+		return
+	}
+
+	sync, err := h.Queries.UpsertGitHubRepoSync(r.Context(), db.UpsertGitHubRepoSyncParams{
+		WorkspaceID:    wsUUID,
+		InstallationID: req.InstallationID,
+		RepoOwner:      req.RepoOwner,
+		RepoName:       req.RepoName,
+		SyncDirection:  req.SyncDirection,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save repo sync")
+		return
+	}
+	writeJSON(w, http.StatusOK, githubRepoSyncToResponse(sync))
+}
+
+// DeleteGitHubRepoSync removes a repo sync configuration.
+func (h *Handler) DeleteGitHubRepoSync(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	repoOwner := chi.URLParam(r, "repoOwner")
+	repoName := chi.URLParam(r, "repoName")
+	if repoOwner == "" || repoName == "" {
+		writeError(w, http.StatusBadRequest, "repoOwner and repoName are required")
+		return
+	}
+
+	if err := h.Queries.DeleteGitHubRepoSync(r.Context(), db.DeleteGitHubRepoSyncParams{
+		WorkspaceID: wsUUID,
+		RepoOwner:   repoOwner,
+		RepoName:    repoName,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete repo sync")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
