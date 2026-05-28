@@ -9,6 +9,8 @@ import {
   resizeTerminalSession,
   killTerminalSession,
   killAllTerminalSessions,
+  hasTerminalSession,
+  getTerminalReplay,
 } from "./terminal-manager";
 
 const TERMINAL_PREFS_PATH = join(homedir(), ".multica", "terminal_prefs.json");
@@ -56,6 +58,14 @@ export function setupTerminal(getMainWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle("terminal:kill", (_event, sessionId: string) => {
     killTerminalSession(sessionId);
+  });
+
+  ipcMain.handle("terminal:exists", (_event, sessionId: string) => {
+    return hasTerminalSession(sessionId);
+  });
+
+  ipcMain.handle("terminal:get-replay", (_event, sessionId: string) => {
+    return getTerminalReplay(sessionId);
   });
 
   ipcMain.handle("terminal:get-repo-path", (_event, wsId: string) => {

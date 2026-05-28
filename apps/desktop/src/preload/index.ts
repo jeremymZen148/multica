@@ -215,6 +215,10 @@ const terminalAPI = {
     ipcRenderer.on("terminal:exit", handler);
     return () => ipcRenderer.removeListener("terminal:exit", handler);
   },
+  exists: (sessionId: string): Promise<boolean> =>
+    ipcRenderer.invoke("terminal:exists", sessionId),
+  getReplay: (sessionId: string): Promise<string> =>
+    ipcRenderer.invoke("terminal:get-replay", sessionId),
   getRepoPath: (wsId: string): Promise<string | null> =>
     ipcRenderer.invoke("terminal:get-repo-path", wsId),
   setRepoPath: (wsId: string, repoPath: string): Promise<void> =>

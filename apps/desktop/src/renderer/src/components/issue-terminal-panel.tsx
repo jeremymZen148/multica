@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
-import { GitDiff, Plus, RefreshCw, Terminal } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Diff, Plus, RefreshCw, Terminal } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { ScrollArea } from "@multica/ui/components/ui/scroll-area";
 import { cn } from "@multica/ui/lib/utils";
@@ -21,11 +21,8 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
   const [changesOutput, setChangesOutput] = useState<string>("");
   const [changesLoading, setChangesLoading] = useState(false);
 
-  // Stable session ID — one terminal per issue
   const sessionId = `issue:${issueId}`;
 
-
-  // Load repo path for this workspace on mount
   useEffect(() => {
     window.terminalAPI.getRepoPath(wsId).then((path) => {
       setRepoPath(path);
@@ -33,7 +30,6 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
     });
   }, [wsId]);
 
-  // Subscribe to IPC data and exit events for this session
   const onDataCallback = useCallback(
     (handler: (data: string) => void) => {
       return window.terminalAPI.onData(({ sessionId: sid, data }) => {
@@ -43,23 +39,27 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
     [sessionId],
   );
 
-  const handleMount = useCallback((_write: (data: string) => void) => {}, []);
+  const writeRef = useRef<((data: string) => void) | null>(null);
 
-  const handleReady = useCallback(() => {
+  const handleMount = useCallback((write: (data: string) => void) => {
+    writeRef.current = write;
+  }, []);
+
+  const handleReady = useCallback(async (cols: number, rows: number) => {
     if (!repoPath) return;
-    const cols = 120;
-    const rows = 30;
-    window.terminalAPI.create(sessionId, repoPath, cols, rows);
+    const alive = await window.terminalAPI.exists(sessionId);
+    if (alive) {
+      window.terminalAPI.resize(sessionId, cols, rows).catch(() => {});
+      // Replay buffered output so the freshly-mounted xterm shows prior content.
+      const replay = await window.terminalAPI.getReplay(sessionId);
+      if (replay && writeRef.current) writeRef.current(replay);
+    } else {
+      window.terminalAPI.create(sessionId, repoPath, cols, rows).catch(() => {});
+    }
   }, [sessionId, repoPath]);
 
-
-
-  // Kill session on unmount
-  useEffect(() => {
-    return () => {
-      window.terminalAPI.kill(sessionId).catch(() => {});
-    };
-  }, [sessionId]);
+  // PTY sessions survive navigation — killed only on app quit via killAllTerminalSessions.
+  // Do NOT add a kill-on-unmount here; it sends SIGHUP to background jobs in zsh.
 
   async function saveRepoPath() {
     const trimmed = repoPathInput.trim();
@@ -73,7 +73,6 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
     if (!repoPath) return;
     setChangesLoading(true);
     try {
-      // Run git diff via a one-shot terminal session
       const diffSessionId = `diff:${issueId}:${Date.now()}`;
       const outputParts: string[] = [];
 
@@ -90,11 +89,9 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
         });
 
         window.terminalAPI.create(diffSessionId, repoPath, 120, 50).then(() => {
-          // Run git diff and exit
           window.terminalAPI.write(diffSessionId, "git diff HEAD --stat 2>&1; echo '---DIFF---'; git diff HEAD 2>&1; exit 0\r");
         });
 
-        // Timeout fallback
         setTimeout(() => {
           unsub();
           unsubExit();
@@ -159,17 +156,18 @@ export function IssueTerminalPanel({ issueId, identifier, wsId }: IssueTerminalP
         changesLoading={changesLoading}
       />
 
-      {activeTab === "terminal" && (
-        <div className="relative flex-1 overflow-hidden bg-background p-1">
-          <TerminalEmulator
-            onMount={handleMount}
-            onData={onDataCallback}
-            onReady={handleReady}
-            onResize={(cols, rows) => window.terminalAPI.resize(sessionId, cols, rows)}
-            className="h-full"
-          />
-        </div>
-      )}
+      {/* Terminal — always mounted so the PTY session and xterm state survive
+          tab switches. Use CSS visibility instead of conditional rendering. */}
+      <div className={cn("relative flex-1 overflow-hidden p-1", activeTab !== "terminal" && "hidden")}>
+        <TerminalEmulator
+          onMount={handleMount}
+          onData={onDataCallback}
+          onInput={(data) => window.terminalAPI.write(sessionId, data)}
+          onReady={handleReady}
+          onResize={(cols, rows) => window.terminalAPI.resize(sessionId, cols, rows)}
+          className="h-full"
+        />
+      </div>
 
       {activeTab === "changes" && (
         <ScrollArea className="flex-1">
@@ -229,7 +227,7 @@ function PanelTabBar({
             : "text-muted-foreground hover:text-foreground",
         )}
       >
-        <GitDiff className="h-3 w-3" />
+        <Diff className="h-3 w-3" />
         Changes
       </button>
 
@@ -262,9 +260,7 @@ function PanelTabBar({
   );
 }
 
-// Very simple ANSI escape stripper for the changes view (color codes become spans)
 function AnsiText({ text }: { text: string }) {
-  // Strip control characters that aren't ANSI color codes, keep the text
   const plain = text.replace(/\x1B\[[0-9;]*[mGKHF]/g, "");
   return <>{plain}</>;
 }

@@ -384,8 +384,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     id: layoutId,
   });
   const sidebarRef = usePanelRef();
-  const terminalPanelRef = usePanelRef();
-  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalEverOpened, setTerminalEverOpened] = useState(
+    () => localStorage.getItem("multica_terminal_open") === "1",
+  );
+  const [terminalOpen, setTerminalOpen] = useState(
+    () => localStorage.getItem("multica_terminal_open") === "1",
+  );
+  const [terminalHeightPx, setTerminalHeightPx] = useState(() =>
+    Math.max(150, Number(localStorage.getItem("multica_terminal_height_px")) || 280),
+  );
+  const terminalHeightPxRef = useRef(terminalHeightPx);
+  terminalHeightPxRef.current = terminalHeightPx;
   const isMobile = useIsMobile();
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(defaultSidebarOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -763,11 +772,33 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   }, [isMobile, sidebarRef]);
 
   const handleToggleTerminal = useCallback(() => {
-    const panel = terminalPanelRef.current;
-    if (!panel) return;
-    if (panel.isCollapsed()) panel.expand();
-    else panel.collapse();
-  }, [terminalPanelRef]);
+    if (terminalOpen) {
+      setTerminalOpen(false);
+      localStorage.removeItem("multica_terminal_open");
+    } else {
+      setTerminalEverOpened(true);
+      setTerminalOpen(true);
+      localStorage.setItem("multica_terminal_open", "1");
+    }
+  }, [terminalOpen]);
+
+  const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = terminalHeightPxRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const h = Math.max(100, startHeight - (ev.clientY - startY));
+      setTerminalHeightPx(h);
+      terminalHeightPxRef.current = h;
+    };
+    const onUp = () => {
+      localStorage.setItem("multica_terminal_height_px", String(terminalHeightPxRef.current));
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   if (loading) {
     return (
@@ -1555,32 +1586,25 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     </ResizablePanelGroup>
   );
 
-  if (!terminalPanel) {
-    return (
-      <div className="flex-1 min-h-0">
+  return (
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {horizontalPanels}
       </div>
-    );
-  }
-
-  return (
-    <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
-      <ResizablePanel id="issue-body" minSize="30%">
-        {horizontalPanels}
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel
-        id="issue-terminal"
-        defaultSize={0}
-        minSize={15}
-        collapsible
-        panelRef={terminalPanelRef}
-        onResize={(size) => setTerminalOpen(size.inPixels > 0)}
-      >
-        <div className="h-full border-t">
-          {terminalPanel}
-        </div>
-      </ResizablePanel>
-    </ResizablePanelGroup>
+      {terminalPanel && terminalEverOpened && (
+        <>
+          <div
+            className="h-1 shrink-0 cursor-row-resize bg-border hover:bg-primary/30 transition-colors"
+            onMouseDown={handleTerminalResizeStart}
+          />
+          <div
+            style={{ height: terminalOpen ? terminalHeightPx : 0 }}
+            className="shrink-0 overflow-hidden border-t transition-none"
+          >
+            {terminalPanel}
+          </div>
+        </>
+      )}
+    </div>
   );
 }

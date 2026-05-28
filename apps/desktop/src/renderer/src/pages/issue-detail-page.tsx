@@ -32,6 +32,7 @@ export function IssueDetailPage() {
             <ErrorBoundary>
               <Suspense fallback={null}>
                 <IssueTerminalPanel
+                  key={issue.id}
                   issueId={issue.id}
                   identifier={issue.identifier}
                   wsId={wsId}
