@@ -17,6 +17,7 @@ import {
   Pin,
   PinOff,
   Plus,
+  Terminal,
   Users,
 } from "lucide-react";
 import { PageHeader } from "../../layout/page-header";
@@ -349,13 +350,15 @@ interface IssueDetailProps {
   layoutId?: string;
   /** When set, the issue detail will auto-scroll to this comment and briefly highlight it. */
   highlightCommentId?: string;
+  /** Desktop-only: renders a resizable bottom panel (terminal, diff viewer, etc.). */
+  terminalPanel?: React.ReactNode;
 }
 
 // ---------------------------------------------------------------------------
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, terminalPanel }: IssueDetailProps) {
   const { t } = useT("issues");
   const id = issueId;
   const router = useNavigation();
@@ -381,6 +384,17 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     id: layoutId,
   });
   const sidebarRef = usePanelRef();
+  const [terminalEverOpened, setTerminalEverOpened] = useState(
+    () => localStorage.getItem("multica_terminal_open") === "1",
+  );
+  const [terminalOpen, setTerminalOpen] = useState(
+    () => localStorage.getItem("multica_terminal_open") === "1",
+  );
+  const [terminalHeightPx, setTerminalHeightPx] = useState(() =>
+    Math.max(150, Number(localStorage.getItem("multica_terminal_height_px")) || 280),
+  );
+  const terminalHeightPxRef = useRef(terminalHeightPx);
+  terminalHeightPxRef.current = terminalHeightPx;
   const isMobile = useIsMobile();
   const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(defaultSidebarOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -756,6 +770,35 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     if (panel.isCollapsed()) panel.expand();
     else panel.collapse();
   }, [isMobile, sidebarRef]);
+
+  const handleToggleTerminal = useCallback(() => {
+    if (terminalOpen) {
+      setTerminalOpen(false);
+      localStorage.removeItem("multica_terminal_open");
+    } else {
+      setTerminalEverOpened(true);
+      setTerminalOpen(true);
+      localStorage.setItem("multica_terminal_open", "1");
+    }
+  }, [terminalOpen]);
+
+  const handleTerminalResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = terminalHeightPxRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const h = Math.max(100, startHeight - (ev.clientY - startY));
+      setTerminalHeightPx(h);
+      terminalHeightPxRef.current = h;
+    };
+    const onUp = () => {
+      localStorage.setItem("multica_terminal_height_px", String(terminalHeightPxRef.current));
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, []);
 
   if (loading) {
     return (
@@ -1139,6 +1182,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 </Button>
               }
             />
+            {terminalPanel && (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant={terminalOpen ? "secondary" : "ghost"}
+                      size="icon-sm"
+                      className={terminalOpen ? "" : "text-muted-foreground"}
+                      onClick={handleToggleTerminal}
+                    >
+                      <Terminal />
+                    </Button>
+                  }
+                />
+                <TooltipContent side="bottom">{t(($) => $.detail.terminal_tooltip)}</TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1501,8 +1561,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     );
   }
 
-  return (
-    <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
+  const horizontalPanels = (
+    <ResizablePanelGroup orientation="horizontal" className="h-full" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
       <ResizablePanel id="content" minSize="50%">
         {detailContent}
       </ResizablePanel>
@@ -1524,5 +1584,27 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       </div>
       </ResizablePanel>
     </ResizablePanelGroup>
+  );
+
+  return (
+    <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {horizontalPanels}
+      </div>
+      {terminalPanel && terminalEverOpened && (
+        <>
+          <div
+            className="h-1 shrink-0 cursor-row-resize bg-border hover:bg-primary/30 transition-colors"
+            onMouseDown={handleTerminalResizeStart}
+          />
+          <div
+            style={{ height: terminalOpen ? terminalHeightPx : 0 }}
+            className="shrink-0 overflow-hidden border-t transition-none"
+          >
+            {terminalPanel}
+          </div>
+        </>
+      )}
+    </div>
   );
 }

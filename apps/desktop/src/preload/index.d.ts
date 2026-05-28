@@ -93,12 +93,26 @@ interface UpdaterAPI {
   >;
 }
 
+interface TerminalAPI {
+  create: (sessionId: string, cwd: string, cols: number, rows: number) => Promise<void>;
+  write: (sessionId: string, data: string) => void;
+  resize: (sessionId: string, cols: number, rows: number) => Promise<void>;
+  kill: (sessionId: string) => Promise<void>;
+  exists: (sessionId: string) => Promise<boolean>;
+  getReplay: (sessionId: string) => Promise<string>;
+  onData: (callback: (payload: { sessionId: string; data: string }) => void) => () => void;
+  onExit: (callback: (payload: { sessionId: string; exitCode: number }) => void) => () => void;
+  getRepoPath: (wsId: string) => Promise<string | null>;
+  setRepoPath: (wsId: string, repoPath: string) => Promise<void>;
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI;
     desktopAPI: DesktopAPI;
     daemonAPI: DaemonAPI;
     updater: UpdaterAPI;
+    terminalAPI: TerminalAPI;
   }
 }
 
