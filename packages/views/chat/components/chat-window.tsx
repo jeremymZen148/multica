@@ -442,11 +442,8 @@ export function ChatWindow() {
 
   const isVisible = isOpen && (isExpanded || boundsReady);
 
-  const containerClass = isExpanded
-    ? "absolute inset-3 z-50 flex flex-col rounded-xl ring-1 ring-foreground/10 bg-sidebar shadow-2xl overflow-hidden"
-    : "absolute bottom-2 right-2 z-50 flex flex-col rounded-xl ring-1 ring-foreground/10 bg-sidebar shadow-2xl overflow-hidden";
+  const containerClass = "absolute bottom-2 right-2 z-50 flex flex-col rounded-xl ring-1 ring-foreground/10 bg-sidebar shadow-2xl overflow-hidden";
   const containerStyle: React.CSSProperties = {
-    ...(!isExpanded ? { width: renderWidth, height: renderHeight } : {}),
     transformOrigin: "bottom right",
     pointerEvents: isOpen ? "auto" : "none",
   };
@@ -456,21 +453,21 @@ export function ChatWindow() {
       ref={windowRef}
       className={containerClass}
       style={containerStyle}
-      layout="position"
-      initial={{ opacity: 0, scale: 0.95 }}
+      initial={{ opacity: 0, scale: 0.95, width: renderWidth, height: renderHeight }}
       animate={{
         opacity: isVisible ? 1 : 0,
         scale: isVisible ? 1 : 0.95,
+        width: renderWidth,
+        height: renderHeight,
       }}
       transition={{
-        layout: isDragging
-          ? { duration: 0 }
-          : { type: "spring", duration: 0.3, bounce: 0 },
+        width: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
+        height: isDragging ? { duration: 0 } : { type: "spring", duration: 0.3, bounce: 0 },
         opacity: { duration: 0.15 },
         scale: { type: "spring", duration: 0.2, bounce: 0 },
       }}
     >
-      {!isExpanded && <ChatResizeHandles onDragStart={startDrag} />}
+      <ChatResizeHandles onDragStart={startDrag} />
       {/* Header — ⊕ new + session dropdown | window tools */}
       <div className="flex items-center justify-between border-b px-4 py-2.5 gap-2">
         <div className="flex items-center gap-1 min-w-0">
@@ -907,7 +904,7 @@ function SessionDropdown({
   return (
     <>
       <DropdownMenu>
-        <DropdownMenuTrigger className="flex items-center gap-1.5 min-w-0 rounded-md px-1.5 py-1 transition-colors hover:bg-accent aria-expanded:bg-accent">
+        <DropdownMenuTrigger className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent aria-expanded:bg-accent">
           {triggerAgent && (
             <ActorAvatar
               actorType="agent"
@@ -917,7 +914,7 @@ function SessionDropdown({
               showStatusDot
             />
           )}
-          <span className="truncate text-sm font-medium">{title}</span>
+          <span className="min-w-0 truncate text-sm font-medium">{title}</span>
           {otherSessionRunning ? (
             <span
               aria-label={t(($) => $.window.another_running)}
@@ -933,7 +930,10 @@ function SessionDropdown({
           ) : null}
           <ChevronDown className="size-3 text-muted-foreground shrink-0" />
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-96 w-auto min-w-64 max-w-80 overflow-y-auto">
+        <DropdownMenuContent
+          align="start"
+          className="max-h-96 w-auto min-w-[max(16rem,var(--anchor-width,16rem))] max-w-96 overflow-y-auto"
+        >
           {sessions.length === 0 ? (
             <div className="px-2 py-1.5 text-xs text-muted-foreground">
               {t(($) => $.window.no_previous)}
@@ -1019,11 +1019,16 @@ function SessionDropdown({
 /**
  * Inline editor for a session title. Mounts focused with the existing
  * title pre-selected so the user can either replace it outright or arrow
- * into the existing text. Enter commits, Escape / blur cancels.
+ * into the existing text. Enter commits, Escape cancels, a real click
+ * outside the input also commits.
  *
- * Lives inside a DropdownMenuItem; we stop propagation on keys and clicks
- * so Base UI's menu doesn't intercept arrow / space / enter for navigation
- * while the user is typing.
+ * We do NOT commit on the input's `blur` event: Base UI's Menu uses
+ * focus-follows-cursor (hovering a sibling row drags DOM focus there),
+ * so a blur handler would fire on every mouse-move and "save" the user's
+ * half-typed title without them clicking anywhere. Instead a document-
+ * level `pointerdown` listener — registered in capture phase so it runs
+ * before Base UI's outside-click close handler — commits when the user
+ * actually clicks outside the input.
  */
 function SessionRenameInput({
   initialValue,
@@ -1037,10 +1042,32 @@ function SessionRenameInput({
   const { t } = useT("chat");
   const [value, setValue] = useState(initialValue);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Hold the latest value + callback in refs so the mount-only effect's
+  // listener always sees fresh state without re-subscribing on every
+  // keystroke (which would briefly leave a window where pointerdown isn't
+  // observed).
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const onSubmitRef = useRef(onSubmit);
+  onSubmitRef.current = onSubmit;
 
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
+
+    const handlePointerDown = (e: PointerEvent) => {
+      const input = inputRef.current;
+      if (!input) return;
+      if (input.contains(e.target as Node)) return;
+      onSubmitRef.current(valueRef.current);
+    };
+    // Capture phase — Base UI registers its own outside-click handler in
+    // bubble; running first lets us commit before the menu starts to
+    // close (and unmount this component).
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown, true);
+    };
   }, []);
 
   return (
@@ -1064,7 +1091,6 @@ function SessionRenameInput({
           onCancel();
         }
       }}
-      onBlur={() => onSubmit(value)}
       className="w-full rounded-sm bg-background px-1 py-0.5 text-sm outline-none ring-1 ring-border focus-visible:ring-brand"
     />
   );

@@ -45,10 +45,12 @@
         "terms",
         "security",
         "contact",
+        "contact-sales",
         "blog",
         "careers",
         "press",
-        "download"
+        "download",
+        "usecases"
       ]
     },
     {
@@ -70,6 +72,7 @@
         "projects",
         "autopilots",
         "agents",
+        "squads",
         "inbox",
         "my-issues",
         "usage",

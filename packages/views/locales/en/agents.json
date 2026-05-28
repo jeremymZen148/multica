@@ -130,6 +130,7 @@
     "section_skills": "Skills",
     "prop_runtime": "Runtime",
     "prop_model": "Model",
+    "prop_thinking": "Thinking",
     "prop_visibility": "Visibility",
     "prop_concurrency": "Concurrency",
     "prop_owner": "Owner",
@@ -166,13 +167,16 @@
     "model_managed_by_runtime": "Managed by runtime",
     "model_search_placeholder": "Search or type a model ID",
     "model_discovering": "Discovering models…",
-    "model_default_badge": "default",
     "model_empty": "No models available",
     "model_empty_with_dot": "No models available.",
     "model_custom_tooltip": "Use \"{{value}}\" as a custom model id",
     "model_custom_use": "Use \"{{value}}\"",
     "model_clear": "Clear (use provider default)",
-    "model_clear_title": "Clear and fall back to the runtime's provider default"
+    "model_clear_title": "Clear and fall back to the runtime's provider default",
+    "thinking_default": "Follow CLI config",
+    "thinking_tooltip": "Thinking · {{value}}",
+    "thinking_clear": "Follow CLI config",
+    "thinking_clear_title": "Clear the override and let the local CLI config (claude/codex) decide the reasoning level"
   },
   "model_dropdown": {
     "label": "Model",
@@ -186,10 +190,12 @@
   },
   "tabs": {
     "activity": "Activity",
+    "tasks": "Tasks",
     "instructions": "Instructions",
     "skills": "Skills",
     "environment": "Environment",
     "custom_args": "Custom Args",
+    "mcp_config": "MCP",
     "discard_dialog_title": "Discard unsaved changes?",
     "discard_dialog_description": "You have unsaved changes in this tab. Leaving now will discard them.",
     "discard_keep": "Keep editing",
@@ -210,7 +216,6 @@
     "runtime_filter_all": "All",
     "runtime_loading": "Loading runtimes...",
     "runtime_none": "No runtime available",
-    "runtime_register_first": "Register a runtime before creating an agent",
     "runtime_cloud_badge": "Cloud",
     "runtime_private_badge": "Private",
     "runtime_private_locked_tooltip": "Private runtime — only its owner or a workspace admin can create agents on it. Ask the owner to switch it to Public to share.",
@@ -218,7 +223,35 @@
     "create": "Create",
     "creating": "Creating...",
     "cancel": "Cancel",
-    "create_failed_toast": "Failed to create agent"
+    "create_failed_toast": "Failed to create agent",
+    "skill_attach_failed_toast": "Agent created, but failed to attach skills: {{error}}",
+    "squad_join_failed_toast": "Agent \"{{name}}\" was created but couldn't join the squad: {{error}}. You can add it manually from Members.",
+    "instructions": {
+      "label": "Instructions",
+      "placeholder_blank": "Click to write instructions…",
+      "placeholder_duplicate": "Click to view or edit the duplicated instructions",
+      "collapse": "Collapse",
+      "editor_placeholder": "Write what this agent should do, what to focus on, what to avoid…"
+    },
+    "skills_section": {
+      "label": "Skills",
+      "placeholder": "Add skills from workspace",
+      "selected_one": "{{count}} selected — click to edit",
+      "selected_other": "{{count}} selected — click to edit",
+      "collapse": "Collapse",
+      "list_empty_multi": "No skills in this workspace yet. Create or import one first.",
+      "list_loading": "Loading…",
+      "list_empty_default": "No skills available.",
+      "list_no_match": "No skills match.",
+      "search_placeholder": "Search skills…"
+    },
+    "avatar": {
+      "change_aria": "Change avatar",
+      "upload_aria": "Upload avatar",
+      "remove_aria": "Remove avatar",
+      "select_image_toast": "Please select an image file.",
+      "upload_failed_toast": "Avatar upload failed"
+    }
   },
   "tab_body": {
     "common": {
@@ -231,7 +264,7 @@
       "placeholder": "Define this agent's role, expertise, and working style.\n\n# Example\nYou are a frontend engineer specializing in React and TypeScript.\n\n## Working Style\n- Write small, focused PRs — one commit per logical change\n- Prefer composition over inheritance\n- Always add unit tests for new components\n\n## Constraints\n- Do not modify shared/ types without explicit approval\n- Follow the existing component patterns in features/"
     },
     "env": {
-      "intro_readonly": "Injected into the agent process at launch. Values are hidden — only the agent owner or workspace admin can view and edit them.",
+      "intro_readonly": "Injected into the agent process at launch. Only workspace owners and admins can read or edit values; every reveal and edit is recorded in the workspace audit log.",
       "empty_readonly": "No environment variables configured.",
       "intro_prefix": "Injected into the agent process at launch (e.g. ",
       "intro_separator": ", ",
@@ -243,7 +276,15 @@
       "remove_aria": "Remove variable",
       "duplicate_keys_toast": "Duplicate environment variable keys",
       "saved_toast": "Environment variables saved",
-      "save_failed_toast": "Failed to save environment variables"
+      "save_failed_toast": "Failed to save environment variables",
+      "not_revealed_title_one": "{{count}} variable configured",
+      "not_revealed_title_other": "{{count}} variables configured",
+      "not_revealed_empty": "No environment variables configured.",
+      "not_revealed_hint": "Values stay masked until you reveal them. Every reveal and edit is recorded in the workspace audit log.",
+      "reveal_action": "Reveal & edit",
+      "revealing": "Revealing…",
+      "reveal_failed_toast": "Failed to load env values",
+      "empty_editable": "No environment variables configured. Add one to inject it into the agent at launch."
     },
     "custom_args": {
       "intro": "Additional CLI arguments appended to the agent command at launch. Multi-token flags can share one row — they'll be split on whitespace before being passed to the CLI.",
@@ -254,10 +295,21 @@
       "saved_toast": "Custom arguments saved",
       "save_failed_toast": "Failed to save custom arguments"
     },
+    "mcp_config": {
+      "intro": "MCP server configuration forwarded to the runtime CLI (Claude via --mcp-config, Codex via $CODEX_HOME/config.toml). Stored verbatim and may contain secrets — only the agent owner and workspace admins can read it. Leave empty to fall back to the CLI's own default.",
+      "placeholder": "{\n  \"mcpServers\": {\n    \"fetch\": {\n      \"command\": \"uvx\",\n      \"args\": [\"mcp-server-fetch\"]\n    }\n  }\n}",
+      "editor_aria": "MCP config JSON editor",
+      "clear_action": "Clear",
+      "invalid_json": "Invalid JSON: {{error}}",
+      "invalid_not_object": "MCP config must be a JSON object (e.g. {\"mcpServers\": …}).",
+      "saved_toast": "MCP config saved",
+      "save_failed_toast": "Failed to save MCP config",
+      "redacted_title": "Configured — hidden from your view",
+      "redacted_hint": "Only the agent owner or a workspace admin can read this config."
+    },
     "skills": {
       "intro": "Workspace skills assigned to this agent. Local runtime skills are always available automatically.",
       "add_action": "Add skill",
-      "import_hint": "Importing creates a workspace copy that your team can edit and reuse.",
       "empty_title": "No skills assigned",
       "empty_hint": "Add workspace skills to share team knowledge with this agent.",
       "remove_failed_toast": "Failed to remove skill",
@@ -266,6 +318,11 @@
       "add_dialog_search_placeholder": "Search skills",
       "add_dialog_empty": "All workspace skills are already assigned.",
       "add_dialog_no_match": "No skills match your search.",
+      "add_dialog_empty_partial": "No more skills to add — this agent already has all of them.",
+      "add_dialog_saving": "Adding…",
+      "add_dialog_confirm_default": "Add",
+      "add_dialog_confirm_one": "Add {{count}} skill",
+      "add_dialog_confirm_other": "Add {{count}} skills",
       "add_dialog_cancel": "Cancel",
       "add_failed_toast": "Failed to add skill"
     },
@@ -335,6 +392,13 @@
     "owner_label": "Owner",
     "unknown_runtime": "Unknown runtime"
   },
+  "live_peek": {
+    "current_issue_label": "Now on",
+    "no_current_issue": "No task",
+    "last_activity_label": "Last seen",
+    "no_recent_activity": "No recent activity",
+    "failed_indicator": "Failed"
+  },
   "transcript": {
     "dialog_title": "Agent Execution Transcript",
     "status_running": "Running",
@@ -351,7 +415,10 @@
     "copy_filtered": "Copy filtered",
     "copied": "Copied",
     "waiting_events": "Waiting for events...",
-    "no_data": "No execution data recorded."
+    "no_data": "No execution data recorded.",
+    "sort_label": "Sort",
+    "sort_chronological": "Oldest first",
+    "sort_newest_first": "Newest first"
   },
   "task_failure": {
     "agent_error": "Agent execution error",

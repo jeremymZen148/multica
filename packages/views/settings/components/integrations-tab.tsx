@@ -216,7 +216,7 @@ export function IntegrationsTab() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-4">
       <section className="space-y-4">
         <h2 className="text-sm font-semibold">{t(($) => $.integrations.section_title)}</h2>
 
