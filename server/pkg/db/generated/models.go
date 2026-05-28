@@ -653,16 +653,6 @@ type GithubIssueSync struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
-type GithubRepoSync struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	InstallationID int64              `json:"installation_id"`
-	RepoOwner      string             `json:"repo_owner"`
-	RepoName       string             `json:"repo_name"`
-	SyncDirection  string             `json:"sync_direction"`
-	CreatedAt      pgtype.Timestamptz `json:"created_at"`
-}
-
 type AIProviderConfig struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
