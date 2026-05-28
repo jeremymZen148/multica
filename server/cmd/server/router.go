@@ -77,6 +77,10 @@ type RouterOptions struct {
 	// BatchedHeartbeatScheduler here so the caller can also drive Run/Stop;
 	// tests leave this nil and get the legacy synchronous behavior.
 	HeartbeatScheduler handler.HeartbeatScheduler
+	// HandlerOut, when non-nil, is filled with the constructed Handler so
+	// callers (e.g. main.go) can pass it to background services like the
+	// Telegram polling loop without rebuilding it separately.
+	HandlerOut **handler.Handler
 }
 
 func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) chi.Router {
@@ -121,6 +125,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
+	}
+	if opts.HandlerOut != nil {
+		*opts.HandlerOut = h
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
@@ -219,6 +226,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
 
+	// Slack inbound webhooks (authenticated via HMAC-SHA256 signing secret).
+	r.Post("/api/webhooks/slack/commands", h.HandleSlackCommand)
+	r.Post("/api/webhooks/slack/interactive", h.HandleSlackInteractive)
+
+	// Slack OAuth callback (public — state param carries workspace ID).
+	r.Get("/api/slack/callback", h.SlackCallback)
+
+	// Telegram inbound webhook (workspace-scoped URL, no extra auth needed
+	// because the URL itself is the secret for bot webhook delivery).
+	r.Post("/api/webhooks/telegram/{workspaceId}", h.HandleTelegramWebhook)
+
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
 		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache))
@@ -282,6 +300,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/members", h.ListMembersWithUser)
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
+					// Listing GitHub installations is member-visible so the
+					// GitHub settings tab no longer renders blank for non-admins;
+					// the handler strips the management handle and adds a
+					// can_manage hint so the UI can gate connect/disconnect.
+					r.Get("/github/installations", h.ListGitHubInstallations)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -298,13 +321,35 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
 
-				// GitHub integration — admin-only operations live here so the
-				// nesting matches the rest of /api/workspaces/{id}/* routes.
+				// GitHub integration — connect / disconnect remain admin-only;
+				// the read-only list endpoint lives in the member-level group
+				// above so non-admins can see the workspace's connection state.
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Get("/github/connect", h.GitHubConnect)
-					r.Get("/github/installations", h.ListGitHubInstallations)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
+					r.Get("/github-sync", h.ListGitHubRepoSyncs)
+					r.Post("/github-sync", h.UpsertGitHubRepoSync)
+					r.Delete("/github-sync/{repoOwner}/{repoName}", h.DeleteGitHubRepoSync)
+				})
+
+				// Slack integration — admin-only.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Get("/slack/connect", h.SlackConnect)
+					r.Get("/slack", h.GetSlackIntegration)
+					r.Delete("/slack", h.DeleteSlackIntegration)
+				})
+
+				// Telegram integration — admin-only.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/telegram", h.UpsertTelegramIntegration)
+					r.Get("/telegram", h.GetTelegramIntegration)
+					r.Delete("/telegram", h.DeleteTelegramIntegration)
+					r.Get("/ai-provider", h.GetAIProviderConfig)
+					r.Put("/ai-provider", h.UpsertAIProviderConfig)
+					r.Delete("/ai-provider", h.DeleteAIProviderConfig)
 				})
 			})
 		})
@@ -324,6 +369,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
+
+			// Slack / Telegram user-level account linking (any member).
+			r.Post("/api/integrations/slack/link", h.LinkSlackUser)
+			r.Delete("/api/integrations/slack/link", h.UnlinkSlackUser)
+			r.Post("/api/integrations/telegram/link", h.LinkTelegramUser)
+			r.Delete("/api/integrations/telegram/link", h.UnlinkTelegramUser)
 
 			// Assignee frequency
 			r.Get("/api/assignee-frequency", h.GetAssigneeFrequency)

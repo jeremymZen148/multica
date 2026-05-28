@@ -39,6 +39,26 @@ UPDATE comment SET
 WHERE id = $1
 RETURNING *;
 
+-- name: GetLatestAgentComment :one
+-- Returns the most recent agent comment on an issue at any thread depth.
+-- Used to display the agent's last output in external channel notifications.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND author_type = 'agent'
+ORDER BY created_at DESC
+LIMIT 1;
+
+-- name: GetLatestAgentRootComment :one
+-- Returns the most recent root-level (no parent) agent comment on an issue.
+-- Used to thread member replies from external channels (Telegram, Slack) under
+-- the agent's output comment rather than posting a separate top-level comment.
+SELECT * FROM comment
+WHERE issue_id = @issue_id
+  AND author_type = 'agent'
+  AND parent_id IS NULL
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: HasAgentCommentedSince :one
 SELECT EXISTS (
     SELECT 1 FROM comment
