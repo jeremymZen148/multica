@@ -1,14 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Activity,
   BookOpenText,
   FileText,
   KeyRound,
+  ListTodo,
+  Plug,
   Terminal,
 } from "lucide-react";
 import type { Agent, AgentRuntime } from "@multica/core/types";
+import { providerSupportsMcpConfig } from "@multica/core/agents";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -24,21 +27,27 @@ import { InstructionsTab } from "./tabs/instructions-tab";
 import { SkillsTab } from "./tabs/skills-tab";
 import { EnvTab } from "./tabs/env-tab";
 import { CustomArgsTab } from "./tabs/custom-args-tab";
+import { McpConfigTab } from "./tabs/mcp-config-tab";
+import { ActorIssuesPanel } from "../../common/actor-issues-panel";
 import { useT } from "../../i18n";
 
 type DetailTab =
   | "activity"
+  | "tasks"
   | "instructions"
   | "skills"
   | "env"
-  | "custom_args";
+  | "custom_args"
+  | "mcp_config";
 
-const TAB_LABEL_KEY: Record<DetailTab, "activity" | "instructions" | "skills" | "environment" | "custom_args"> = {
+const TAB_LABEL_KEY: Record<DetailTab, "activity" | "tasks" | "instructions" | "skills" | "environment" | "custom_args" | "mcp_config"> = {
   activity: "activity",
+  tasks: "tasks",
   instructions: "instructions",
   skills: "skills",
   env: "environment",
   custom_args: "custom_args",
+  mcp_config: "mcp_config",
 };
 
 const detailTabs: {
@@ -46,10 +55,12 @@ const detailTabs: {
   icon: typeof FileText;
 }[] = [
   { id: "activity", icon: Activity },
+  { id: "tasks", icon: ListTodo },
   { id: "instructions", icon: FileText },
   { id: "skills", icon: BookOpenText },
   { id: "env", icon: KeyRound },
   { id: "custom_args", icon: Terminal },
+  { id: "mcp_config", icon: Plug },
 ];
 
 interface AgentOverviewPaneProps {
@@ -59,10 +70,11 @@ interface AgentOverviewPaneProps {
 }
 
 /**
- * Right-pane on the agent detail page. Five tabs of equal weight:
+ * Right-pane on the agent detail page:
  *
  *   - Activity (default) — what the agent is doing now / how it's been doing /
  *     what it just finished. The "watch state" surface.
+ *   - Tasks — assigned/created issues using the shared issue board/list.
  *   - Instructions / Skills / Env / Custom Args — four editing surfaces.
  *
  * The previous Settings tab was deleted because every field on it is now
@@ -97,6 +109,24 @@ export function AgentOverviewPane({
     ? runtimes.find((r) => r.id === agent.runtime_id) ?? null
     : null;
 
+  // The MCP tab is only shown when the agent's runtime backend actually
+  // consumes mcp_config — see providerSupportsMcpConfig. We default to
+  // showing it when the runtime row hasn't loaded yet so a slow fetch
+  // can't transiently flicker the tab off and then on.
+  const visibleTabs = useMemo(() => {
+    const showMcp = runtime ? providerSupportsMcpConfig(runtime.provider) : true;
+    return detailTabs.filter((tab) => tab.id !== "mcp_config" || showMcp);
+  }, [runtime]);
+
+  // If the active tab disappears (e.g. user just switched the agent's
+  // runtime to one that doesn't read mcp_config), fall back to Activity
+  // for this render so the pane is never empty. The user's stored
+  // activeTab is left alone — switching back to a supporting runtime
+  // brings their selection back.
+  const effectiveTab: DetailTab = visibleTabs.some((tab) => tab.id === activeTab)
+    ? activeTab
+    : "activity";
+
   const requestTabChange = (next: DetailTab) => {
     if (next === activeTab) return;
     if (activeDirty) {
@@ -123,13 +153,13 @@ export function AgentOverviewPane({
     // the grid-driven full-height behavior on tablet and up.
     <div className="flex min-h-[60vh] flex-col overflow-hidden rounded-lg border bg-background md:h-full md:min-h-0">
       <div className="flex shrink-0 items-center gap-0 overflow-x-auto border-b px-2 md:px-4">
-        {detailTabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             type="button"
             onClick={() => requestTabChange(tab.id)}
             className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap border-b-2 px-3 py-2.5 text-xs font-medium transition-colors ${
-              activeTab === tab.id
+              effectiveTab === tab.id
                 ? "border-foreground text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             }`}
@@ -141,8 +171,13 @@ export function AgentOverviewPane({
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto">
-        {activeTab === "activity" && <ActivityTab agent={agent} />}
-        {activeTab === "instructions" && (
+        {effectiveTab === "activity" && <ActivityTab agent={agent} />}
+        {effectiveTab === "tasks" && (
+          <div className="flex h-full min-h-[520px] flex-col">
+            <ActorIssuesPanel actorType="agent" actorId={agent.id} />
+          </div>
+        )}
+        {effectiveTab === "instructions" && (
           <TabContent>
             <InstructionsTab
               agent={agent}
@@ -151,26 +186,33 @@ export function AgentOverviewPane({
             />
           </TabContent>
         )}
-        {activeTab === "skills" && (
+        {effectiveTab === "skills" && (
           <TabContent>
             <SkillsTab agent={agent} />
           </TabContent>
         )}
-        {activeTab === "env" && (
+        {effectiveTab === "env" && (
           <TabContent>
             <EnvTab
               agent={agent}
-              readOnly={agent.custom_env_redacted}
+              onDirtyChange={setActiveDirty}
+            />
+          </TabContent>
+        )}
+        {effectiveTab === "custom_args" && (
+          <TabContent>
+            <CustomArgsTab
+              agent={agent}
+              runtimeDevice={runtime ?? undefined}
               onSave={(updates) => onUpdate(agent.id, updates)}
               onDirtyChange={setActiveDirty}
             />
           </TabContent>
         )}
-        {activeTab === "custom_args" && (
+        {effectiveTab === "mcp_config" && (
           <TabContent>
-            <CustomArgsTab
+            <McpConfigTab
               agent={agent}
-              runtimeDevice={runtime ?? undefined}
               onSave={(updates) => onUpdate(agent.id, updates)}
               onDirtyChange={setActiveDirty}
             />
@@ -208,7 +250,7 @@ export function AgentOverviewPane({
   );
 }
 
-// Centred, max-width container shared by every config tab. `h-full flex
+// Padded, full-width container shared by every config tab. `h-full flex
 // flex-col` lets a tab opt into "fill the viewport" by giving its root
 // element `flex-1 min-h-0` (Instructions does this so the editor expands
 // instead of pushing the Save row off-screen). Tabs that don't opt in
@@ -216,6 +258,6 @@ export function AgentOverviewPane({
 // list) still scrolls via the parent's overflow-y-auto.
 function TabContent({ children }: { children: React.ReactNode }) {
   return (
-    <div className="mx-auto flex h-full max-w-2xl flex-col p-4 md:p-6">{children}</div>
+    <div className="flex h-full flex-col p-4 md:p-6">{children}</div>
   );
 }

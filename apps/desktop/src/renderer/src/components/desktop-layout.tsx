@@ -13,7 +13,6 @@ import { ModalRegistry } from "@multica/views/modals/registry";
 import { AppSidebar } from "@multica/views/layout";
 import { SearchCommand, SearchTrigger } from "@multica/views/search";
 import { ChatFab, ChatWindow } from "@multica/views/chat";
-import { StarterContentPrompt } from "@multica/views/onboarding";
 import { WorkspaceSlugProvider, paths, useCurrentWorkspace } from "@multica/core/paths";
 import { getCurrentSlug, subscribeToCurrentSlug } from "@multica/core/platform";
 import { useDesktopUnreadBadge } from "@multica/views/platform";
@@ -35,6 +34,7 @@ function SidebarTopBar() {
         style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
       >
         <button
+          type="button"
           onClick={goBack}
           disabled={!canGoBack}
           aria-label="Go back"
@@ -43,6 +43,7 @@ function SidebarTopBar() {
           <ChevronLeft className="size-4" />
         </button>
         <button
+          type="button"
           onClick={goForward}
           disabled={!canGoForward}
           aria-label="Go forward"
@@ -53,6 +54,20 @@ function SidebarTopBar() {
       </div>
     </div>
   );
+}
+
+function useNativeNavigationGestures() {
+  const { goBack, goForward } = useTabHistory();
+
+  useEffect(() => {
+    return window.desktopAPI.onNavigationGesture((gesture) => {
+      if (gesture === "back") {
+        goBack();
+      } else {
+        goForward();
+      }
+    });
+  }, [goBack, goForward]);
 }
 
 // The main area's top bar doubles as a window drag region. When the sidebar
@@ -133,6 +148,7 @@ function DesktopInboxBridge() {
 export function DesktopShell() {
   useInternalLinkHandler();
   useActiveTitleSync();
+  useNativeNavigationGestures();
 
   // Reactive read of current workspace slug from the platform singleton.
   // On first mount, slug is null until WorkspaceRouteLayout (inside the tab
@@ -169,7 +185,6 @@ export function DesktopShell() {
         </div>
         {slug && <ModalRegistry />}
         {slug && <SearchCommand />}
-        {slug && <StarterContentPrompt />}
         <WindowOverlay />
       </WorkspaceSlugProvider>
     </DesktopNavigationProvider>

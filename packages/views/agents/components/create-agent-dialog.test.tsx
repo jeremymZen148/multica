@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup } from "@testing-library/react";
 import type { Agent, MemberWithUser, RuntimeDevice } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { NavigationProvider, type NavigationAdapter } from "../../navigation";
 import enCommon from "../../locales/en/common.json";
 import enAgents from "../../locales/en/agents.json";
+
+const navigationStub: NavigationAdapter = {
+  push: vi.fn(),
+  replace: vi.fn(),
+  back: vi.fn(),
+  pathname: "/",
+  searchParams: new URLSearchParams(),
+  getShareableUrl: (path: string) => path,
+};
 
 const TEST_RESOURCES = { en: { common: enCommon, agents: enAgents } };
 
@@ -76,7 +87,6 @@ function makeRuntime(overrides: Partial<RuntimeDevice>): RuntimeDevice {
     metadata: {},
     owner_id: ME,
     visibility: "private",
-    timezone: "UTC",
     last_seen_at: "2026-04-27T11:59:50Z",
     created_at: "2026-04-01T00:00:00Z",
     updated_at: "2026-04-01T00:00:00Z",
@@ -95,9 +105,7 @@ function makeTemplate(runtimeId: string): Agent {
     avatar_url: null,
     runtime_mode: "local",
     runtime_config: {},
-    custom_env: {},
     custom_args: [],
-    custom_env_redacted: false,
     visibility: "private",
     status: "idle",
     max_concurrent_tasks: 1,
@@ -120,14 +128,18 @@ function renderDialog(runtimes: RuntimeDevice[], template?: Agent) {
   render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <QueryClientProvider client={queryClient}>
-        <CreateAgentDialog
-          runtimes={runtimes}
-          members={members}
-          currentUserId={ME}
-          template={template}
-          onClose={onClose}
-          onCreate={onCreate}
-        />
+        <WorkspaceSlugProvider slug="test-ws">
+        <NavigationProvider value={navigationStub}>
+          <CreateAgentDialog
+            runtimes={runtimes}
+            members={members}
+            currentUserId={ME}
+            template={template}
+            onClose={onClose}
+            onCreate={onCreate}
+          />
+        </NavigationProvider>
+        </WorkspaceSlugProvider>
       </QueryClientProvider>
     </I18nProvider>,
   );
@@ -136,6 +148,15 @@ function renderDialog(runtimes: RuntimeDevice[], template?: Agent) {
 
 describe("CreateAgentDialog runtime visibility gate", () => {
   beforeEach(() => vi.clearAllMocks());
+  // Base UI Dialog renders into a portal on document.body and leaves
+  // focus-guard / inert wrapper divs around after the React tree unmounts.
+  // The auto-cleanup from @testing-library/react drops the container but
+  // not the portal residue, so two-tests-in-a-row queries see double
+  // matches ("All", "My Runtime"). Force cleanup + wipe body between tests.
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
 
   it("disables another member's private runtime in the picker", () => {
     const mine = makeRuntime({ id: "rt-mine", name: "My Runtime", owner_id: ME, visibility: "private" });

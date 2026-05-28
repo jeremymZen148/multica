@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -57,6 +59,33 @@ func allowedOrigins() []string {
 	return origins
 }
 
+// parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
+// MULTICA_TRUSTED_PROXIES env var. Invalid entries are dropped with a single
+// warn-line per entry rather than crashing the server — a typo in one CIDR
+// shouldn't take the whole API down. Returns nil for empty input, which the
+// rate limiter treats as "trust no proxy headers, use RemoteAddr only".
+func parseTrustedProxies(raw string) []netip.Prefix {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			slog.Warn("MULTICA_TRUSTED_PROXIES: ignoring invalid CIDR",
+				"value", s, "error", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
 // rdb is optional: when non-nil the runtime local-skill request stores are
 // swapped for Redis-backed implementations so multiple API nodes share the
@@ -106,11 +135,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	cfSigner := auth.NewCloudFrontSignerFromEnv()
 
 	signupConfig := handler.Config{
-		AllowSignup:                   os.Getenv("ALLOW_SIGNUP") != "false",
-		AllowedEmails:                 splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
-		AllowedEmailDomains:           splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
-		UseDailyRollupForRuntimeUsage: os.Getenv("USAGE_DAILY_ROLLUP_ENABLED") == "true",
-		UseDailyRollupForDashboard:    os.Getenv("USAGE_DASHBOARD_ROLLUP_ENABLED") == "true",
+		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
+		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
+		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
+		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
+		CloudRuntimeFleetURL:     cloudRuntimeFleetURLFromEnv(),
+		CloudRuntimeFleetTimeout: envDuration("MULTICA_CLOUD_FLEET_TIMEOUT", 35*time.Second),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	if opts.DaemonWakeup != nil {
@@ -122,6 +154,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.LocalSkillListStore = handler.NewRedisLocalSkillListStore(rdb)
 		h.LocalSkillImportStore = handler.NewRedisLocalSkillImportStore(rdb)
 		h.LivenessStore = handler.NewRedisLivenessStore(rdb)
+		h.WebhookRateLimiter = handler.NewRedisWebhookRateLimiter(rdb, handler.DefaultWebhookRateLimit())
+		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
 	}
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
@@ -138,6 +172,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	daemonTokenCache := auth.NewDaemonTokenCache(rdb)
 	h.PATCache = patCache
 	h.DaemonTokenCache = daemonTokenCache
+	h.MembershipCache = auth.NewMembershipCache(rdb)
+
+	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
+	// Fleet. Returns nil when no Fleet URL is configured — the Auth /
+	// DaemonAuth middlewares treat nil as "mcn_ not supported" and
+	// reject with 401, instead of falling through to mul_/JWT paths.
+	// Reuses MULTICA_CLOUD_FLEET_URL (the same URL the cloud-runtime
+	// proxy uses) so a deployment doesn't need a second config knob.
+	cloudPATVerifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{
+		FleetBaseURL: signupConfig.CloudRuntimeFleetURL,
+		Redis:        rdb,
+	})
 
 	// Empty-claim cache: lets the daemon poll path skip a Postgres
 	// scan when a recent check confirmed the runtime had no queued
@@ -212,19 +258,36 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	}
 
-	// Auth (public)
-	r.Post("/auth/send-code", h.SendCode)
-	r.Post("/auth/verify-code", h.VerifyCode)
-	r.Post("/auth/google", h.GoogleLogin)
+	// Auth (public) — per-IP rate limiting.
+	if rdb == nil {
+		slog.Warn("rate limiting disabled: REDIS_URL not configured")
+	}
+	trustedProxies := middleware.ParseTrustedProxies(os.Getenv("RATE_LIMIT_TRUSTED_PROXIES"))
+	authRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH", 5), time.Minute, trustedProxies)
+	authVerifyRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH_VERIFY", 20), time.Minute, trustedProxies)
+	contactSalesRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_CONTACT_SALES", 5), time.Hour, trustedProxies)
+	r.With(authRL).Post("/auth/send-code", h.SendCode)
+	r.With(authVerifyRL).Post("/auth/verify-code", h.VerifyCode)
+	r.With(authRL).Post("/auth/google", h.GoogleLogin)
 	r.Post("/auth/logout", h.Logout)
 
 	// Public API
 	r.Get("/api/config", h.GetConfig)
+	r.With(contactSalesRL).Post("/api/contact-sales", h.CreateContactSales)
 
+	// Webhook ingress for autopilots. Outside the authenticated group on
+	// purpose: the bearer token in the URL path IS the credential. Workspace
+	// context is derived from the trigger row, never from request headers.
+	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
+	// Stripe webhook (no Multica auth — Stripe signs the raw body
+	// with a shared secret, the multica-cloud upstream verifies. We
+	// only forward the bytes + the Stripe-Signature header; see
+	// HandleCloudBillingStripeWebhook for the rationale).
+	r.Post("/api/webhooks/stripe", h.HandleCloudBillingStripeWebhook)
 
 	// Slack inbound webhooks (authenticated via HMAC-SHA256 signing secret).
 	r.Post("/api/webhooks/slack/commands", h.HandleSlackCommand)
@@ -239,7 +302,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
-		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache))
+		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache, cloudPATVerifier))
 
 		r.Post("/register", h.DaemonRegister)
 		r.Post("/deregister", h.DaemonDeregister)
@@ -256,6 +319,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Get("/tasks/{taskId}/status", h.GetTaskStatus)
 		r.Post("/tasks/{taskId}/start", h.StartTask)
+		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
@@ -274,7 +338,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// Protected API routes
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(queries, patCache))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
 
 		// --- User-scoped routes (no workspace context required) ---
@@ -283,8 +347,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Patch("/api/me/onboarding", h.PatchOnboarding)
 		r.Post("/api/me/onboarding/complete", h.CompleteOnboarding)
 		r.Post("/api/me/onboarding/cloud-waitlist", h.JoinCloudWaitlist)
-		r.Post("/api/me/starter-content/import", h.ImportStarterContent)
-		r.Post("/api/me/starter-content/dismiss", h.DismissStarterContent)
+		// DEPRECATED — shim routes for desktop < v3 during the rollout
+		// window. v3 frontend creates the Helper agent + starter issue
+		// via generic CreateAgent / CreateIssue and only calls /complete
+		// here. Remove once X-Client-Version telemetry confirms zero
+		// pre-v3 desktops are still calling these. Handlers live in
+		// server/internal/handler/onboarding_shim.go.
+		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
+		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
 		r.Post("/api/cli-token", h.IssueCliToken)
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
@@ -363,7 +433,45 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Route("/api/tokens", func(r chi.Router) {
 			r.Get("/", h.ListPersonalAccessTokens)
 			r.Post("/", h.CreatePersonalAccessToken)
+			r.Post("/current/renew", h.RenewCurrentPersonalAccessToken)
 			r.Delete("/{id}", h.RevokePersonalAccessToken)
+		})
+
+		// Cloud Billing proxy. Same upstream service / port as
+		// cloud-runtime — multica-cloud's Fleet and Billing share
+		// :8080 and the same chi router. All routes here forward
+		// to /api/v1/billing/* with X-User-ID stamped from the
+		// authenticated context.
+		//
+		// User-scoped (account-level), NOT workspace-scoped — sits
+		// outside the RequireWorkspaceMember group so a user can
+		// inspect their balance, top up, and open the Billing Portal
+		// without an active workspace selected. The upstream owner
+		// model is single-user; X-Workspace-ID would be ignored even
+		// if we sent it. The Stripe webhook is the public outlier
+		// and lives outside the entire Auth group (see above).
+		//
+		// IMPORTANT — task-token actors are blocked here. The Auth
+		// middleware happily turns an mat_ task token into a normal
+		// X-User-ID stamp (so agents can comment, claim issues, etc.
+		// as their owner), but billing is account-level and a running
+		// agent reading its owner's balance / opening a checkout
+		// session is the kind of lateral-movement we're explicitly
+		// trying to prevent. handler.RequireHumanActor checks the
+		// authoritative server-set X-Actor-Source header and 403s
+		// any task-token request. See actor_guards.go for the full
+		// rationale.
+		r.Route("/api/cloud-billing", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+
+			r.Get("/balance", h.GetCloudBillingBalance)
+			r.Get("/transactions", h.ListCloudBillingTransactions)
+			r.Get("/batches", h.ListCloudBillingBatches)
+			r.Get("/topups", h.ListCloudBillingTopups)
+			r.Get("/price-tiers", h.ListCloudBillingPriceTiers)
+			r.Post("/checkout-sessions", h.CreateCloudBillingCheckoutSession)
+			r.Get("/checkout-sessions/{sessionId}", h.GetCloudBillingCheckoutSession)
+			r.Post("/portal-sessions", h.CreateCloudBillingPortalSession)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---
@@ -383,6 +491,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/issues", func(r chi.Router) {
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
+				r.Get("/children", h.ListChildrenByParents)
+				r.Get("/grouped", h.ListGroupedIssues)
 				r.Get("/", h.ListIssues)
 				r.Post("/", h.CreateIssue)
 				r.Post("/quick-create", h.QuickCreateIssue)
@@ -410,6 +520,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/labels", h.ListLabelsForIssue)
 					r.Post("/labels", h.AttachLabel)
 					r.Delete("/labels/{labelId}", h.DetachLabel)
+					r.Get("/metadata", h.ListIssueMetadata)
+					r.Put("/metadata/{key}", h.SetIssueMetadataKey)
+					r.Delete("/metadata/{key}", h.DeleteIssueMetadataKey)
 					r.Get("/pull-requests", h.ListPullRequestsForIssue)
 				})
 			})
@@ -439,9 +552,29 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteProject)
 					r.Get("/resources", h.ListProjectResources)
 					r.Post("/resources", h.CreateProjectResource)
+					r.Put("/resources/{resourceId}", h.UpdateProjectResource)
 					r.Delete("/resources/{resourceId}", h.DeleteProjectResource)
 				})
 			})
+
+			// Squads
+			r.Route("/api/squads", func(r chi.Router) {
+				r.Get("/", h.ListSquads)
+				r.Post("/", h.CreateSquad)
+				r.Route("/{id}", func(r chi.Router) {
+					r.Get("/", h.GetSquad)
+					r.Put("/", h.UpdateSquad)
+					r.Delete("/", h.DeleteSquad)
+					r.Get("/members", h.ListSquadMembers)
+					r.Get("/members/status", h.ListSquadMemberStatus)
+					r.Post("/members", h.AddSquadMember)
+					r.Delete("/members", h.RemoveSquadMember)
+					r.Patch("/members/role", h.UpdateSquadMemberRole)
+				})
+			})
+
+			// Squad leader evaluation (writes to activity_log)
+			r.Post("/api/issues/{id}/squad-evaluated", h.RecordSquadLeaderEvaluation)
 
 			// Autopilots
 			r.Route("/api/autopilots", func(r chi.Router) {
@@ -453,10 +586,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteAutopilot)
 					r.Post("/trigger", h.TriggerAutopilot)
 					r.Get("/runs", h.ListAutopilotRuns)
+					r.Get("/runs/{runId}", h.GetAutopilotRun)
+					r.Get("/deliveries", h.ListAutopilotDeliveries)
+					r.Get("/deliveries/{deliveryId}", h.GetAutopilotDelivery)
+					r.Post("/deliveries/{deliveryId}/replay", h.ReplayAutopilotDelivery)
 					r.Post("/triggers", h.CreateAutopilotTrigger)
 					r.Route("/triggers/{triggerId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateAutopilotTrigger)
 						r.Delete("/", h.DeleteAutopilotTrigger)
+						r.Post("/rotate-webhook-token", h.RotateAutopilotTriggerWebhookToken)
+						r.Put("/signing-secret", h.SetAutopilotTriggerSigningSecret)
 					})
 				})
 			})
@@ -471,6 +610,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 			// Attachments
 			r.Get("/api/attachments/{id}", h.GetAttachmentByID)
+			r.Get("/api/attachments/{id}/content", h.GetAttachmentContent)
 			r.Delete("/api/attachments/{id}", h.DeleteAttachment)
 
 			// Comments
@@ -487,6 +627,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/agents", func(r chi.Router) {
 				r.Get("/", h.ListAgents)
 				r.Post("/", h.CreateAgent)
+				// Agent templates: pre-configured instructions + skill refs.
+				// Picking a template imports the referenced skills into the
+				// workspace (find-or-create by name) and creates the agent
+				// with the template's instructions in one transaction.
+				r.Post("/from-template", h.CreateAgentFromTemplate)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetAgent)
 					r.Put("/", h.UpdateAgent)
@@ -496,7 +641,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
+					// Dedicated env-management endpoint. Owner/admin only;
+					// agent actors are denied. Every reveal / write is
+					// audited to activity_log. See MUL-2600 and
+					// internal/handler/agent_env.go.
+					r.Get("/env", h.GetAgentEnv)
+					r.Put("/env", h.UpdateAgentEnv)
 				})
+			})
+
+			// Agent templates catalog (browse + detail). The Create flow
+			// lives under /api/agents/from-template above; this route is for
+			// the picker UI to list available templates.
+			r.Route("/api/agent-templates", func(r chi.Router) {
+				r.Get("/", h.ListAgentTemplates)
+				r.Get("/{slug}", h.GetAgentTemplate)
 			})
 
 			// Skills
@@ -514,12 +673,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
-			// Usage
-			r.Route("/api/usage", func(r chi.Router) {
-				r.Get("/daily", h.GetWorkspaceUsageByDay)
-				r.Get("/summary", h.GetWorkspaceUsageSummary)
-			})
-
 			// Dashboard — workspace-wide token + run-time rollups for the
 			// "/{slug}/dashboard" page. Optional ?project_id filter scopes
 			// the rollup to a single project.
@@ -527,6 +680,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/usage/daily", h.GetDashboardUsageDaily)
 				r.Get("/usage/by-agent", h.GetDashboardUsageByAgent)
 				r.Get("/agent-runtime", h.GetDashboardAgentRunTime)
+				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 			})
 
 			// Runtimes
@@ -547,7 +701,30 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
 					r.Delete("/", h.DeleteAgentRuntime)
+					// Cascade variant of DELETE: archive every active agent
+					// bound to this runtime, cancel their tasks, then delete
+					// the runtime — all in one transaction. Used by the
+					// DeleteRuntimeDialog when the strict DELETE refused with
+					// `runtime_has_active_agents` and the user confirmed the
+					// cascade plan.
+					r.Post("/archive-agents-and-delete", h.ArchiveAgentsAndDeleteRuntime)
 				})
+			})
+
+			// Cloud Runtime fleet proxy. The remote service URL is configured
+			// on SaaS API nodes only; self-hosted deployments return 503.
+			r.Route("/api/cloud-runtime", func(r chi.Router) {
+				r.Get("/", h.GetCloudRuntimeService)
+				r.Get("/healthz", h.GetCloudRuntimeHealth)
+				r.Get("/readyz", h.GetCloudRuntimeReady)
+				r.Get("/nodes", h.ListCloudRuntimeNodes)
+				r.Post("/nodes", h.CreateCloudRuntimeNode)
+				r.Delete("/nodes", h.DeleteCloudRuntimeNode)
+				r.Post("/nodes/start", h.StartCloudRuntimeNode)
+				r.Post("/nodes/stop", h.StopCloudRuntimeNode)
+				r.Post("/nodes/reboot", h.RebootCloudRuntimeNode)
+				r.Post("/nodes/status", h.GetCloudRuntimeNodeStatus)
+				r.Post("/nodes/exec", h.ExecCloudRuntimeNode)
 			})
 
 			// Tasks (user-facing, with ownership check)
@@ -684,4 +861,11 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return res
+}
+
+func cloudRuntimeFleetURLFromEnv() string {
+	if url := strings.TrimSpace(os.Getenv("MULTICA_CLOUD_FLEET_URL")); url != "" {
+		return url
+	}
+	return strings.TrimSpace(os.Getenv("MULTICA_FLEET_URL"))
 }

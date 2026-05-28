@@ -85,6 +85,7 @@ export function GitHubTab() {
   const upsertGitHubRepoSync = useUpsertGitHubRepoSync(wsId);
   const deleteGitHubRepoSync = useDeleteGitHubRepoSync(wsId);
 
+
   const flags = deriveGitHubSettings(workspace);
   const [savingKey, setSavingKey] = useState<SettingsKey | null>(null);
   const [connecting, setConnecting] = useState(false);
@@ -96,6 +97,7 @@ export function GitHubTab() {
   const [syncName, setSyncName] = useState("");
   const [syncInstallationId, setSyncInstallationId] = useState("");
   const [syncDirection, setSyncDirection] = useState<GitHubSyncDirection>("both");
+
 
   async function persistSetting(key: SettingsKey, next: boolean) {
     if (!workspace || savingKey) return;
@@ -175,6 +177,7 @@ export function GitHubTab() {
     }
   }
 
+
   if (!workspace) return null;
 
   const repositoriesHref = `${navigation.pathname}?tab=repositories`;
@@ -227,11 +230,20 @@ export function GitHubTab() {
                 <div className="space-y-1">
                   <p className="text-sm font-medium">{t(($) => $.github.connection_title)}</p>
                   {connected ? (
-                    <p className="text-xs text-muted-foreground">
-                      {t(($) => $.github.connected_to, {
-                        login: installations.map((i) => i.account_login).join(", "),
-                      })}
-                    </p>
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        {t(($) => $.github.connected_to, {
+                          login: installations.map((i) => i.account_login).join(", "),
+                        })}
+                      </p>
+                      {primaryInstallation?.connected_by && (
+                        <p className="text-xs text-muted-foreground">
+                          {t(($) => $.github.connected_by, {
+                            name: primaryInstallation.connected_by!,
+                          })}
+                        </p>
+                      )}
+                    </>
                   ) : canManage ? (
                     <p className="text-xs text-muted-foreground">
                       {t(($) => $.github.connection_description_prefix)}{" "}
@@ -251,6 +263,9 @@ export function GitHubTab() {
               {canManage && (
                 <div className="flex items-center gap-2">
                   {connected && primaryInstallation ? (
+                    // Disconnect must stay reachable even when the master switch
+                    // is off — disconnect is a separate intent (revoke the App
+                    // grant) from hiding the feature.
                     <Button
                       variant="outline"
                       size="sm"
@@ -455,6 +470,7 @@ export function GitHubTab() {
           </Card>
         </section>
       )}
+
 
       <section className="space-y-3">
         <h2 className="text-sm font-semibold">{t(($) => $.github.section_repositories)}</h2>

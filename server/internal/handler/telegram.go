@@ -472,7 +472,7 @@ func (h *Handler) telegramComment(ctx context.Context, wsID, actorID string, arg
 
 	// Mirror the HTTP comment handler: if the issue is assigned to an agent
 	// with on_comment trigger, enqueue a task so the agent picks up the reply.
-	if h.shouldEnqueueOnComment(ctx, issue) {
+	if h.shouldEnqueueOnComment(ctx, issue, "member", actorID) {
 		if _, err := h.TaskService.EnqueueTaskForIssue(ctx, issue, comment.ID); err != nil {
 			slog.Warn("telegram: enqueue agent task on comment failed", "issue_id", issue.ID, "error", err)
 		}

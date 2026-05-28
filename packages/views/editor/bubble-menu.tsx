@@ -272,6 +272,7 @@ function HeadingDropdown({ editor, onOpenChange, activeLevel }: { editor: Editor
       >
         {items.map((item) => (
           <button
+            type="button"
             key={item.label}
             className="flex w-full cursor-default items-center gap-2 rounded-md px-1.5 py-1 text-xs outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
             onMouseDown={(e) => {
@@ -323,6 +324,7 @@ function ListDropdown({ editor, onOpenChange, isBullet, isOrdered }: { editor: E
         finalFocus={false}
       >
         <button
+          type="button"
           className="flex w-full cursor-default items-center gap-2 rounded-md px-1.5 py-1 text-xs outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
           onMouseDown={(e) => {
             e.preventDefault();
@@ -334,6 +336,7 @@ function ListDropdown({ editor, onOpenChange, isBullet, isOrdered }: { editor: E
           {isBullet && <Check className="ml-auto size-3.5" />}
         </button>
         <button
+          type="button"
           className="flex w-full cursor-default items-center gap-2 rounded-md px-1.5 py-1 text-xs outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
           onMouseDown={(e) => {
             e.preventDefault();
@@ -406,8 +409,12 @@ function CreateSubIssueButton({
         )
         .run();
       toast.success(t(($) => $.bubble_menu.sub_issue.created, { identifier: newIssue.identifier }));
-    } catch {
-      toast.error(t(($) => $.bubble_menu.sub_issue.create_failed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.bubble_menu.sub_issue.create_failed),
+      );
     } finally {
       setPending(false);
     }

@@ -29,6 +29,37 @@ type Model struct {
 	Label    string `json:"label"`
 	Provider string `json:"provider,omitempty"`
 	Default  bool   `json:"default,omitempty"`
+	// Thinking advertises the runtime's reasoning/effort catalog for this
+	// model. nil means the runtime/model has no thinking-level control
+	// (or the daemon couldn't discover one); the UI hides its picker. The
+	// catalog is per-model because Codex's `codex debug models` is itself
+	// per-model and Claude's `--effort` superset has known per-model gaps
+	// (`xhigh` is Opus-only, `max` is session-only). See MUL-2339.
+	Thinking *ModelThinking `json:"thinking,omitempty"`
+}
+
+// ModelThinking carries the per-model reasoning/effort catalog
+// surfaced by an agent runtime. Values are runtime-native — Codex
+// emits "none|minimal|low|medium|high|xhigh"; Claude emits
+// "low|medium|high|xhigh|max". The frontend renders SupportedLevels
+// as-is so what users see matches each CLI's own UI.
+type ModelThinking struct {
+	SupportedLevels []ThinkingLevel `json:"supported_levels"`
+	// DefaultLevel is the value the runtime picks when no override is
+	// provided. Empty means "the runtime picks, we don't know" — the
+	// UI shows "Default" as a generic option.
+	DefaultLevel string `json:"default_level,omitempty"`
+}
+
+// ThinkingLevel is one entry in a ModelThinking.SupportedLevels list.
+// Value is the literal token passed to the CLI (Claude `--effort <value>`
+// or Codex `model_reasoning_effort=<value>`); Label is a display string;
+// Description is optional helper copy lifted from the upstream catalog
+// when available (Codex's `description` field).
+type ThinkingLevel struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // modelCache memoizes dynamic discovery calls so repeated UI loads
@@ -51,16 +82,33 @@ const modelCacheTTL = 60 * time.Second
 // openclaw) it shells out with caching and falls back to the static
 // list on failure.
 //
+// For claude and codex, the static catalog is augmented with per-model
+// thinking-level options discovered from the local CLI (see
+// discoverClaudeThinking / discoverCodexThinking). Discovery failures
+// silently leave Thinking == nil on each entry, which the UI treats
+// as "no picker for this model" rather than blocking model selection.
+//
 // executablePath lets the caller point at a non-default binary; pass
 // "" to use the provider's default name on PATH.
 func ListModels(ctx context.Context, providerType, executablePath string) ([]Model, error) {
 	switch providerType {
 	case "claude":
-		return claudeStaticModels(), nil
+		models := claudeStaticModels()
+		annotateClaudeThinking(ctx, models, executablePath)
+		return models, nil
 	case "codex":
-		return codexStaticModels(), nil
+		models := codexStaticModels()
+		annotateCodexThinking(ctx, models, executablePath)
+		return models, nil
 	case "gemini":
 		return geminiStaticModels(), nil
+	case "antigravity":
+		// Antigravity CLI (`agy`) does not expose a `--model` flag today;
+		// model selection lives in the user's Antigravity settings and is
+		// communicated to the backend internally by the CLI itself. Return
+		// an empty catalog so the daemon's model_list endpoint succeeds
+		// without populating a misleading dropdown.
+		return []Model{}, nil
 	case "cursor":
 		return cachedDiscovery(providerType, func() ([]Model, error) {
 			return discoverCursorModels(ctx, executablePath)
@@ -99,14 +147,20 @@ func ListModels(ctx context.Context, providerType, executablePath string) ([]Mod
 }
 
 // ModelSelectionSupported reports whether setting `agent.model` has
-// any effect for the given provider. Today every provider in the
-// registry honours `opts.Model` end-to-end: Hermes routes it through
-// the ACP `session/set_model` RPC before each prompt, which means
-// the UI's dropdown choice is carried all the way down to the LLM
-// call. The helper is retained so we can add a `return false` branch
-// the next time a provider legitimately ignores model selection.
+// any effect for the given provider. Most providers honour `opts.Model`
+// end-to-end — Hermes routes it through the ACP `session/set_model` RPC
+// before each prompt, Claude / Codex / Cursor / Gemini / Copilot / Kimi /
+// Kiro / OpenCode / OpenClaw / Pi pass it via flag or session config.
+//
+// Antigravity is the lone exception: `agy` has no `--model` flag today,
+// and the backend in antigravity.go deliberately drops opts.Model on the
+// floor. Returning false here makes the UI render a disabled
+// "Managed by runtime" picker instead of an empty dropdown plus a
+// silently-ignored manual-entry field.
 func ModelSelectionSupported(providerType string) bool {
-	_ = providerType
+	if providerType == "antigravity" {
+		return false
+	}
 	return true
 }
 
@@ -656,42 +710,63 @@ func discoverACPModels(ctx context.Context, executablePath string, p acpDiscover
 // the caller can distinguish "parsed with no models" (valid but
 // empty catalog) from "couldn't find the structure at all".
 func parseACPSessionNewModels(raw json.RawMessage) []Model {
+	type acpModelInfo struct {
+		ModelID      string `json:"modelId"`
+		ModelIDSnake string `json:"model_id"`
+		Name         string `json:"name"`
+		Description  string `json:"description"`
+	}
 	var resp struct {
 		Models struct {
-			AvailableModels []struct {
-				ModelID     string `json:"modelId"`
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			} `json:"availableModels"`
-			CurrentModelID string `json:"currentModelId"`
+			AvailableModels      []acpModelInfo `json:"availableModels"`
+			AvailableModelsSnake []acpModelInfo `json:"available_models"`
+			CurrentModelID       string         `json:"currentModelId"`
+			CurrentModelIDSnake  string         `json:"current_model_id"`
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil
 	}
-	models := make([]Model, 0, len(resp.Models.AvailableModels))
+	availableModels := resp.Models.AvailableModels
+	if len(availableModels) == 0 && resp.Models.AvailableModelsSnake != nil {
+		availableModels = resp.Models.AvailableModelsSnake
+	}
+	currentModelID := strings.TrimSpace(resp.Models.CurrentModelID)
+	if currentModelID == "" {
+		currentModelID = strings.TrimSpace(resp.Models.CurrentModelIDSnake)
+	}
+	models := make([]Model, 0, len(availableModels))
 	seen := map[string]bool{}
-	for _, m := range resp.Models.AvailableModels {
-		if m.ModelID == "" || seen[m.ModelID] {
+	for _, m := range availableModels {
+		modelID := strings.TrimSpace(m.ModelID)
+		if modelID == "" {
+			modelID = strings.TrimSpace(m.ModelIDSnake)
+		}
+		if modelID == "" || seen[modelID] {
 			continue
 		}
-		seen[m.ModelID] = true
-		label := m.Name
-		if label == "" {
-			label = m.ModelID
-		}
+		seen[modelID] = true
+		label := acpModelLabel(m.Name, modelID)
 		provider := ""
-		if idx := strings.Index(m.ModelID, ":"); idx > 0 {
-			provider = m.ModelID[:idx]
+		if idx := strings.Index(modelID, ":"); idx > 0 {
+			provider = modelID[:idx]
 		}
 		models = append(models, Model{
-			ID:       m.ModelID,
+			ID:       modelID,
 			Label:    label,
 			Provider: provider,
-			Default:  m.ModelID == resp.Models.CurrentModelID,
+			Default:  modelID == currentModelID,
 		})
 	}
 	return models
+}
+
+func acpModelLabel(name, modelID string) string {
+	label := strings.TrimSpace(name)
+	if label == "" || strings.EqualFold(label, "unknown") {
+		return modelID
+	}
+	return label
 }
 
 // discoverCursorModels runs `cursor-agent --list-models` and parses
@@ -830,10 +905,14 @@ func discoverOpenclawAgents(ctx context.Context, executablePath string) ([]Model
 }
 
 // openclawAgentEntry is the shape parseOpenclawAgentsJSON expects
-// from `openclaw agents list --json`. Both `name` and `id` are
-// accepted as the identifier (different openclaw versions ship
-// different field names); `model` is optional and only used to
-// enrich the dropdown label.
+// from `openclaw agents list --json`. `id` is the routing key
+// passed to `openclaw agent --agent <id>`; `name` is the human
+// display label set via `openclaw agents set-identity --name` and
+// is only used to enrich the dropdown label. The two are not
+// interchangeable — see openclawEntriesToModels for the mapping.
+// Older openclaw versions may emit only `name`; in that case we
+// fall back to using it as the id for backward compatibility.
+// `model` is optional and only used to enrich the dropdown label.
 type openclawAgentEntry struct {
 	Name  string `json:"name"`
 	ID    string `json:"id"`
@@ -869,19 +948,28 @@ func openclawEntriesToModels(entries []openclawAgentEntry) []Model {
 	models := make([]Model, 0, len(entries))
 	seen := map[string]bool{}
 	for _, e := range entries {
-		name := e.Name
-		if name == "" {
-			name = e.ID
+		// Use ID as the model identifier because openclaw resolves
+		// --agent by id, not by display name. Names may contain spaces
+		// (e.g. "Sub2API OPS") which openclaw's normalizeAgentId would
+		// mangle into a different string ("sub2api-ops"), causing a
+		// lookup miss and "no parseable output" errors.
+		id := e.ID
+		if id == "" {
+			id = e.Name
 		}
-		if name == "" || seen[name] {
+		if id == "" || seen[id] {
 			continue
 		}
-		seen[name] = true
-		label := name
-		if e.Model != "" {
-			label = name + " (" + e.Model + ")"
+		seen[id] = true
+		displayName := e.Name
+		if displayName == "" {
+			displayName = id
 		}
-		models = append(models, Model{ID: name, Label: label, Provider: "openclaw"})
+		label := displayName
+		if e.Model != "" {
+			label = displayName + " (" + e.Model + ")"
+		}
+		models = append(models, Model{ID: id, Label: label, Provider: "openclaw"})
 	}
 	return models
 }

@@ -436,7 +436,7 @@ func (h *Handler) slackComment(w http.ResponseWriter, ctx context.Context, wsID,
 		"issue_title":  issue.Title,
 		"issue_status": issue.Status,
 	})
-	if h.shouldEnqueueOnComment(ctx, issue) {
+	if h.shouldEnqueueOnComment(ctx, issue, "member", actorID) {
 		h.TaskService.EnqueueTaskForIssue(ctx, issue, comment.ID)
 	}
 	writeJSON(w, http.StatusOK, slackEphemeral(fmt.Sprintf("💬 Comment posted on *%s*.", issue.Title)))

@@ -14,7 +14,8 @@ import (
 
 // RepoContextForEnv describes a workspace repo available for checkout.
 type RepoContextForEnv struct {
-	URL string // remote URL
+	URL         string // remote URL
+	Description string // optional repo description
 }
 
 // ProjectResourceForEnv describes a single resource attached to the issue's
@@ -31,13 +32,22 @@ type ProjectResourceForEnv struct {
 
 // PrepareParams holds all inputs needed to set up an execution environment.
 type PrepareParams struct {
-	WorkspacesRoot string            // base path for all envs (e.g., ~/multica_workspaces)
-	WorkspaceID    string            // workspace UUID — tasks are grouped under this
-	TaskID         string            // task UUID — used for directory name
-	AgentName      string            // for git branch naming only
-	Provider       string            // agent provider (determines runtime config and skill injection paths)
-	CodexVersion   string            // detected Codex CLI version (only used when Provider == "codex")
-	Task           TaskContextForEnv // context data for writing files
+	WorkspacesRoot string // base path for all envs (e.g., ~/multica_workspaces)
+	WorkspaceID    string // workspace UUID — tasks are grouped under this
+	TaskID         string // task UUID — used for directory name
+	AgentName      string // for git branch naming only
+	Provider       string // agent provider (determines runtime config and skill injection paths)
+	CodexVersion   string // detected Codex CLI version (only used when Provider == "codex")
+	OpenclawBin    string // resolved openclaw CLI path (only used when Provider == "openclaw"); empty = look up on PATH
+	// LocalWorkDir, when non-empty, redirects the agent's working directory
+	// to a user-supplied absolute path instead of the synthesised envRoot/
+	// workdir. The path is NOT copied or mounted — the agent operates on
+	// the user's directory in place. The daemon still creates envRoot for
+	// output/, logs/, and .gc_meta.json; only the workdir slot is
+	// substituted. Used by the local_directory project_resource flow
+	// (MUL-2663). When set, the envRoot/workdir directory is not created.
+	LocalWorkDir string
+	Task         TaskContextForEnv // context data for writing files
 }
 
 // TaskContextForEnv is the subset of task context used for writing context files.
@@ -60,13 +70,28 @@ type TaskContextForEnv struct {
 	AutopilotSource         string
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
+	IsSquadLeader           bool   // true when the agent is acting as a squad leader (may exit silently on no_action)
+	// WorkspaceContext is the workspace-level system prompt (workspace.context
+	// in the DB). Rendered into the brief as `## Workspace Context` when
+	// non-empty so every agent in the workspace sees the same shared context,
+	// regardless of issue / chat / autopilot / quick-create.
+	WorkspaceContext string
+	// RequestingUserName + RequestingUserProfileDescription describe the
+	// human the agent is acting on behalf of. v1 sources them from the
+	// runtime owner (the user who registered the daemon). Rendered into the
+	// brief as the `## Requesting User` section only when description is
+	// non-empty — empty means the user opted out of injecting profile
+	// context and the agent stays anonymous-user mode.
+	RequestingUserName               string
+	RequestingUserProfileDescription string
 }
 
 // SkillContextForEnv represents a skill to be written into the execution environment.
 type SkillContextForEnv struct {
-	Name    string
-	Content string
-	Files   []SkillFileContextForEnv
+	Name        string
+	Description string
+	Content     string
+	Files       []SkillFileContextForEnv
 }
 
 // SkillFileContextForEnv represents a supporting file within a skill.
@@ -79,10 +104,30 @@ type SkillFileContextForEnv struct {
 type Environment struct {
 	// RootDir is the top-level env directory ({workspacesRoot}/{task_id_short}/).
 	RootDir string
-	// WorkDir is the directory to pass as Cwd to the agent ({RootDir}/workdir/).
+	// WorkDir is the directory to pass as Cwd to the agent. Normally
+	// ({RootDir}/workdir/); when the task is bound to a local_directory
+	// project_resource, it is the user's path instead. See LocalDirectory.
 	WorkDir string
+	// LocalDirectory is true when WorkDir points at a user-supplied path
+	// outside RootDir (the local_directory flow). Callers that key behavior
+	// on "may I remove WorkDir as scratch?" must check this — for example
+	// the GC loop never deletes the user's directory.
+	LocalDirectory bool
 	// CodexHome is the path to the per-task CODEX_HOME directory (set only for codex provider).
 	CodexHome string
+	// OpenclawConfigPath is the path to the per-task synthesized OpenClaw
+	// config (set only for openclaw provider). The daemon exports this as
+	// OPENCLAW_CONFIG_PATH on the openclaw subprocess so its native skill
+	// scanner pins workspaceDir to WorkDir.
+	OpenclawConfigPath string
+	// OpenclawIncludeRoot is the directory of the user's active OpenClaw
+	// config (set only for openclaw provider with an on-disk user config).
+	// The daemon must prepend it to OPENCLAW_INCLUDE_ROOTS so OpenClaw is
+	// allowed to follow the wrapper's `$include` link out of envRoot into
+	// the user's config — by default OpenClaw confines `$include` to the
+	// directory holding the wrapper file. Empty when no $include is
+	// emitted (fresh install).
+	OpenclawIncludeRoot string
 
 	logger *slog.Logger // for cleanup logging
 }
@@ -120,23 +165,43 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}
 	}
 
-	// Create directory tree.
+	// Create directory tree. For the standard flow the agent's workdir is
+	// envRoot/workdir; for local_directory tasks the user's path takes its
+	// place and we only need to create the scratch directories under
+	// envRoot.
 	workDir := filepath.Join(envRoot, "workdir")
-	for _, dir := range []string{workDir, filepath.Join(envRoot, "output"), filepath.Join(envRoot, "logs")} {
+	scratchDirs := []string{filepath.Join(envRoot, "output"), filepath.Join(envRoot, "logs")}
+	if params.LocalWorkDir == "" {
+		scratchDirs = append(scratchDirs, workDir)
+	} else {
+		workDir = params.LocalWorkDir
+	}
+	for _, dir := range scratchDirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, fmt.Errorf("execenv: create directory %s: %w", dir, err)
 		}
 	}
 
 	env := &Environment{
-		RootDir: envRoot,
-		WorkDir: workDir,
-		logger:  logger,
+		RootDir:        envRoot,
+		WorkDir:        workDir,
+		LocalDirectory: params.LocalWorkDir != "",
+		logger:         logger,
 	}
 
 	// Write context files into workdir (skills go to provider-native paths).
-	if err := writeContextFiles(workDir, params.Provider, params.Task); err != nil {
+	// Track every file/dir we create in a manifest so CleanupSidecars can
+	// roll a local_directory workdir back to its pre-Prepare state. Cloud
+	// tasks don't need the manifest (the GC loop wipes envRoot wholesale),
+	// but we always write one — it's cheap, keeps Prepare/Reuse symmetric,
+	// and avoids a conditional that would silently disable cleanup if the
+	// local_directory detection logic ever drifts.
+	manifest := &sidecarManifest{}
+	if err := writeContextFiles(workDir, params.Provider, params.Task, manifest); err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
+	}
+	if err := writeSidecarManifest(envRoot, manifest); err != nil {
+		logger.Warn("execenv: write sidecar manifest failed (non-fatal)", "error", err)
 	}
 
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
@@ -151,48 +216,121 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		env.CodexHome = codexHome
 	}
 
+	// For OpenClaw, synthesize a per-task config that pins workspace to
+	// workDir. The skill scanner then reads {workDir}/skills/ (written by
+	// writeContextFiles above). Fail closed on errors: a malformed user
+	// config that the openclaw CLI can't read is a real problem and
+	// silently degrading to a minimal config would mask it by booting
+	// OpenClaw without the agents / providers / API keys it expects.
+	if params.Provider == "openclaw" {
+		result, err := prepareOpenclawConfig(envRoot, workDir, OpenclawConfigPrep{OpenclawBin: params.OpenclawBin})
+		if err != nil {
+			return nil, fmt.Errorf("execenv: prepare openclaw config: %w", err)
+		}
+		env.OpenclawConfigPath = result.ConfigPath
+		env.OpenclawIncludeRoot = result.IncludeRoot
+	}
+
 	logger.Info("execenv: prepared env", "root", envRoot, "repos_available", len(params.Task.Repos))
 	return env, nil
 }
 
+// ReuseParams describes the inputs to Reuse. It mirrors PrepareParams for
+// the per-provider knobs (CodexVersion, OpenclawBin) so callers can pass
+// the same resolved binary path on both first-run and reuse paths.
+type ReuseParams struct {
+	WorkDir      string
+	Provider     string
+	CodexVersion string // only used when Provider == "codex"
+	OpenclawBin  string // only used when Provider == "openclaw"; empty = PATH lookup
+	// LocalDirectory is true when the reused WorkDir is a user-supplied
+	// directory (the local_directory flow). The flag is propagated into
+	// the returned Environment so downstream callers (notably the GC
+	// loop) keep the "never delete the user's directory" invariant on
+	// reuse paths.
+	LocalDirectory bool
+	Task           TaskContextForEnv // refreshed context files / skills
+}
+
 // Reuse wraps an existing workdir into an Environment and refreshes context files.
 // Returns nil if the workdir does not exist (caller should fall back to Prepare).
-//
-// codexVersion is the detected Codex CLI version, used (only when provider is
-// "codex") to pick the right sandbox policy for the per-task config.toml.
-// Pass an empty string when the version is unknown.
-func Reuse(workDir, provider, codexVersion string, task TaskContextForEnv, logger *slog.Logger) *Environment {
-	if _, err := os.Stat(workDir); err != nil {
+func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
+	if _, err := os.Stat(params.WorkDir); err != nil {
 		return nil
 	}
 
+	rootDir := filepath.Dir(params.WorkDir)
+	if params.LocalDirectory {
+		// For local_directory tasks the user's WorkDir is unrelated to
+		// envRoot (envRoot still lives under workspacesRoot/{wsID}/...),
+		// so reading it from filepath.Dir(WorkDir) would point at the
+		// parent of the user's directory. Callers that need a real
+		// RootDir on the reuse path should arrange to pass it in
+		// explicitly; for v1 the daemon only ever reuses local_directory
+		// workdirs after a fresh Prepare in the same task lifetime, so
+		// the empty RootDir on reuse is fine for the current callers
+		// (GC writes meta from Prepare's result, not Reuse's).
+		rootDir = ""
+	}
 	env := &Environment{
-		RootDir: filepath.Dir(workDir),
-		WorkDir: workDir,
-		logger:  logger,
+		RootDir:        rootDir,
+		WorkDir:        params.WorkDir,
+		LocalDirectory: params.LocalDirectory,
+		logger:         logger,
 	}
 
-	// Refresh context files (issue_context.md, skills).
-	if err := writeContextFiles(workDir, provider, task); err != nil {
+	// Refresh context files (issue_context.md, skills). Reuse tracks a
+	// fresh manifest under env.RootDir so a later CleanupSidecars sees
+	// the up-to-date list of writes (an old manifest from a prior run
+	// would otherwise reference files this Reuse no longer creates). For
+	// local_directory tasks the daemon skips Reuse entirely (see
+	// daemon.runTask), but writing the manifest unconditionally keeps
+	// Prepare/Reuse symmetric so a future caller can rely on the
+	// manifest being current after either path. RootDir is empty on the
+	// legacy local_directory Reuse fallback — skip the persist in that
+	// case to avoid creating a stray manifest at the filesystem root.
+	manifest := &sidecarManifest{}
+	if err := writeContextFiles(params.WorkDir, params.Provider, params.Task, manifest); err != nil {
 		logger.Warn("execenv: refresh context files failed", "error", err)
+	}
+	if env.RootDir != "" {
+		if err := writeSidecarManifest(env.RootDir, manifest); err != nil {
+			logger.Warn("execenv: refresh sidecar manifest failed", "error", err)
+		}
 	}
 
 	// Restore CodexHome for Codex provider — the per-task codex-home directory
 	// lives alongside the workdir. Re-run prepareCodexHomeWithOpts to ensure
 	// config (especially sandbox/network access) is up to date.
-	if provider == "codex" {
+	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, "codex-home")
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: codexVersion}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion}, logger); err != nil {
 			logger.Warn("execenv: refresh codex-home failed", "error", err)
 		} else {
 			env.CodexHome = codexHome
-			if err := hydrateCodexSkills(codexHome, task.AgentSkills, logger); err != nil {
+			if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, logger); err != nil {
 				logger.Warn("execenv: refresh codex skills failed", "error", err)
 			}
 		}
 	}
 
-	logger.Info("execenv: reusing env", "workdir", workDir)
+	// Refresh the per-task OpenClaw config on reuse — the user may have
+	// added/removed agents or rotated providers since the prior task ran,
+	// and the workspace override always re-targets the current workDir.
+	// Fail closed: a user config that can no longer be parsed should block
+	// reuse rather than degrade to a minimal config that boots OpenClaw
+	// without the registered agents.
+	if params.Provider == "openclaw" {
+		result, err := prepareOpenclawConfig(env.RootDir, params.WorkDir, OpenclawConfigPrep{OpenclawBin: params.OpenclawBin})
+		if err != nil {
+			logger.Warn("execenv: refresh openclaw config failed", "error", err)
+			return nil
+		}
+		env.OpenclawConfigPath = result.ConfigPath
+		env.OpenclawIncludeRoot = result.IncludeRoot
+	}
+
+	logger.Info("execenv: reusing env", "workdir", params.WorkDir)
 	return env
 }
 
@@ -227,7 +365,11 @@ func hydrateCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv, 
 	if len(workspaceSkills) == 0 {
 		return nil
 	}
-	return writeSkillFiles(skillsDir, workspaceSkills)
+	// Codex skills live under env.RootDir/codex-home, which the GC loop
+	// (cloud) or env teardown (local_directory) wipes wholesale — they
+	// don't sit inside the user's workdir and don't need sidecar manifest
+	// tracking.
+	return writeSkillFiles(skillsDir, workspaceSkills, nil)
 }
 
 // GCMetaKind identifies which kind of parent record a task workdir belongs to.
@@ -257,6 +399,14 @@ type GCMeta struct {
 	TaskID         string     `json:"task_id,omitempty"`
 	WorkspaceID    string     `json:"workspace_id"`
 	CompletedAt    time.Time  `json:"completed_at"`
+	// LocalDirectory marks tasks whose WorkDir pointed at a user-owned
+	// path rather than the synthesised envRoot/workdir. The GC loop honours
+	// this by never falling into the gcActionClean branch (which would
+	// RemoveAll envRoot — safe by structure, but we still want to keep the
+	// envRoot's output/ and logs/ around longer so users can inspect what
+	// the agent did in their own tree). Pattern-based artifact cleanup is
+	// still allowed.
+	LocalDirectory bool `json:"local_directory,omitempty"`
 }
 
 const gcMetaFile = ".gc_meta.json"
@@ -304,8 +454,25 @@ func ReadGCMeta(envRoot string) (*GCMeta, error) {
 // Cleanup tears down the execution environment.
 // If removeAll is true, the entire env root is deleted. Otherwise, workdir is
 // removed but output/ and logs/ are preserved for debugging.
+//
+// For local_directory tasks (env.LocalDirectory==true) WorkDir is the
+// user's own path — Cleanup MUST NEVER delete it, regardless of removeAll.
+// In that mode we only ever delete the envRoot scratch directory.
 func (env *Environment) Cleanup(removeAll bool) error {
 	if env == nil {
+		return nil
+	}
+
+	if env.LocalDirectory {
+		// Never touch the user's directory. RootDir is the daemon's own
+		// scratch; safe to remove when the caller asked for a full
+		// teardown.
+		if removeAll && env.RootDir != "" {
+			if err := os.RemoveAll(env.RootDir); err != nil {
+				env.logger.Warn("execenv: cleanup local_directory envRoot failed", "error", err)
+				return err
+			}
+		}
 		return nil
 	}
 
