@@ -261,6 +261,7 @@ function PanelTabBar({
 }
 
 function AnsiText({ text }: { text: string }) {
+  // eslint-disable-next-line no-control-regex
   const plain = text.replace(/\x1B\[[0-9;]*[mGKHF]/g, "");
   return <>{plain}</>;
 }
