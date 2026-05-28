@@ -292,11 +292,7 @@
     "issue_sync_toast_remove_failed": "Failed to remove repository sync",
     "section_repositories": "Repositories",
     "repositories_shortcut_label": "Git repositories used by agents in this workspace",
-    "repositories_shortcut_link": "Manage repositories",
-    "disconnect_confirm_title": "Disconnect GitHub",
-    "disconnect_confirm_description": "This will remove the GitHub App connection. Pull request linking and related features will stop working.",
-    "disconnect_confirm_cancel": "Cancel",
-    "disconnect_confirm_action": "Disconnect"
+    "repositories_shortcut_link": "Manage repositories"
   },
   "repositories": {
     "section_title": "Repositories",

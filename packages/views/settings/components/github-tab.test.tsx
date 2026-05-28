@@ -50,6 +50,13 @@ vi.mock("@tanstack/react-query", () => ({
     setQueryData: mockSetQueryData,
     invalidateQueries: mockInvalidate,
   }),
+  useMutation: (opts: { mutationFn: (...args: unknown[]) => unknown }) => ({
+    mutate: vi.fn((...args: unknown[]) => opts.mutationFn?.(...args)),
+    mutateAsync: vi.fn((...args: unknown[]) => opts.mutationFn?.(...args)),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
   queryOptions: <T,>(opts: T) => opts,
 }));
 
@@ -236,7 +243,7 @@ describe("GitHubTab", () => {
     render(<GitHubTab />, { wrapper: I18nWrapper });
 
     expect(screen.getByText(/Connected to acme/i)).toBeTruthy();
-    expect(screen.getByText(/Read-only view\./i)).toBeTruthy();
+    expect(screen.getByText(/Only admins and owners can manage/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Connect GitHub$/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Disconnect$/ })).toBeNull();
   });
@@ -250,7 +257,7 @@ describe("GitHubTab", () => {
     };
     render(<GitHubTab />, { wrapper: I18nWrapper });
 
-    expect(screen.getByText(/Ask an admin or owner/i)).toBeTruthy();
+    expect(screen.getByText(/Contact a workspace admin/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Connect GitHub$/ })).toBeNull();
   });
 

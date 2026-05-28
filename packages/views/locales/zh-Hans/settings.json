@@ -293,10 +293,6 @@
     "section_repositories": "代码仓库",
     "repositories_shortcut_label": "工作区中智能体使用的 Git 仓库",
     "repositories_shortcut_link": "管理仓库",
-    "disconnect_confirm_title": "断开 GitHub 连接",
-    "disconnect_confirm_description": "这将移除 GitHub App 连接，Pull Request 关联及相关功能将停止工作。",
-    "disconnect_confirm_cancel": "取消",
-    "disconnect_confirm_action": "断开连接",
     "disconnecting": "断开中…"
   },
   "repositories": {
