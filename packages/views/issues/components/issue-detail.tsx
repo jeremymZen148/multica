@@ -1196,7 +1196,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     </Button>
                   }
                 />
-                <TooltipContent side="bottom">{t(($) => $.terminal_tooltip)}</TooltipContent>
+                <TooltipContent side="bottom">{t(($) => $.detail.terminal_tooltip)}</TooltipContent>
               </Tooltip>
             )}
             <Tooltip>
